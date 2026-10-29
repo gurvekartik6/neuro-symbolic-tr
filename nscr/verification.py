@@ -1,91 +1,286 @@
-"""Deterministic checks over user-supplied evidence.
-Never creates synthetic execution data.
-"""
+from __future__ import annotations
+
+from collections import defaultdict
+
+
+SUPPORTED_RULE_FIELDS = {
+    "status",
+    "preconditions_met",
+    "postconditions_met",
+    "input_observation",
+    "output_observation",
+}
+
+SUPPORTED_OPERATORS = {
+    "equals",
+    "not_equals",
+    "exists",
+    "truthy",
+    "contains",
+}
 
 
 def dependency_cycles(steps: list[dict]) -> list[list[str]]:
-    graph = {
-        step.get("id"): list(step.get("depends_on", []))
-        for step in steps
-    }
+    """Return dependency cycles using depth-first search."""
+    graph: dict[str, list[str]] = {}
+    for step in steps:
+        step_id = step.get("id")
+        if not isinstance(step_id, str) or not step_id:
+            continue
 
-    color = {}
-    stack = []
-    cycles = []
-    seen = set()
+        dependencies = step.get("depends_on", [])
+        graph[step_id] = (
+            [dependency for dependency in dependencies if isinstance(dependency, str)]
+            if isinstance(dependencies, list)
+            else []
+        )
 
-    def visit(node):
-        color[node] = 1
+    state: dict[str, int] = {}
+    stack: list[str] = []
+    cycles: list[list[str]] = []
+    seen_cycles: set[tuple[str, ...]] = set()
+
+    def visit(node: str):
+        state[node] = 1
         stack.append(node)
 
-        for next_node in graph.get(node, []):
-            if next_node not in graph:
+        for dependency in graph.get(node, []):
+            if not isinstance(dependency, str):
                 continue
 
-            if color.get(next_node, 0) == 0:
-                visit(next_node)
-            elif color.get(next_node) == 1:
-                cycle = stack[stack.index(next_node):] + [next_node]
-                if tuple(cycle) not in seen:
-                    seen.add(tuple(cycle))
+            if dependency not in graph:
+                continue
+
+            if state.get(dependency, 0) == 0:
+                visit(dependency)
+
+            elif state.get(dependency) == 1:
+                start = stack.index(dependency)
+                cycle = stack[start:] + [dependency]
+                canonical = tuple(cycle)
+
+                if canonical not in seen_cycles:
+                    seen_cycles.add(canonical)
                     cycles.append(cycle)
 
         stack.pop()
-        color[node] = 2
+        state[node] = 2
 
     for node in graph:
-        if color.get(node, 0) == 0:
+        if state.get(node, 0) == 0:
             visit(node)
 
     return cycles
 
 
-def evaluate_rule(rule: dict, events_by_id: dict[str, dict]) -> dict:
-    event_id = rule.get("event_id")
-    event = events_by_id.get(event_id) if event_id else None
+def validate_step_graph(steps: list[dict]) -> None:
+    """Raise ValueError if step IDs or dependencies are invalid."""
+    ids = [step.get("id") for step in steps]
 
-    if event is None and not event_id and len(events_by_id) == 1:
-        event = next(iter(events_by_id.values()))
+    if any(not step_id for step_id in ids):
+        raise ValueError("Every step must have a non-empty ID.")
+
+    if len(ids) != len(set(ids)):
+        raise ValueError("Step IDs must be unique.")
+
+    known = set(ids)
+
+    for step in steps:
+        step_id = step["id"]
+        dependencies = step.get("depends_on", [])
+
+        if len(dependencies) != len(set(dependencies)):
+            raise ValueError(
+                f"Step {step_id} contains duplicate dependencies."
+            )
+
+        for dependency in dependencies:
+            if dependency not in known:
+                raise ValueError(
+                    f"Step {step_id} depends on unknown step {dependency}."
+                )
+
+            if dependency == step_id:
+                raise ValueError(
+                    f"Step {step_id} cannot depend on itself."
+                )
+
+    cycles = dependency_cycles(steps)
+
+    if cycles:
+        raise ValueError(f"Dependency cycle(s) found: {cycles}")
+
+
+def validate_plan_structure(
+    plan: dict,
+    min_steps: int = 1,
+    max_steps: int = 20,
+) -> dict:
+    """Validate plan structure and references without claiming semantics."""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    steps = plan.get("steps", [])
+
+    if not isinstance(steps, list):
+        return {
+            "valid": False,
+            "errors": ["Plan steps must be a list."],
+            "warnings": [],
+        }
+
+    if not min_steps <= len(steps) <= max_steps:
+        errors.append(
+            f"Plan must contain between {min_steps} and {max_steps} steps."
+        )
+
+    try:
+        validate_step_graph(steps)
+    except ValueError as exc:
+        errors.append(str(exc))
+
+    step_ids = {
+        step.get("id")
+        for step in steps
+        if isinstance(step, dict) and step.get("id")
+    }
+
+    constraint_ids: list[str] = []
+
+    for constraint in plan.get("constraints", []):
+        if not isinstance(constraint, dict):
+            errors.append("Every constraint must be an object.")
+            continue
+
+        constraint_id = constraint.get("id")
+
+        if constraint_id:
+            constraint_ids.append(constraint_id)
+
+        for step_id in constraint.get("relevant_step_ids", []):
+            if step_id not in step_ids:
+                errors.append(
+                    f"Constraint {constraint_id} references unknown "
+                    f"step {step_id}."
+                )
+
+        rule = constraint.get("rule")
+
+        if rule:
+            if rule.get("field") not in SUPPORTED_RULE_FIELDS:
+                errors.append(
+                    f"Constraint {constraint_id} uses an unsupported field."
+                )
+
+            if rule.get("operator") not in SUPPORTED_OPERATORS:
+                errors.append(
+                    f"Constraint {constraint_id} uses an unsupported operator."
+                )
+
+    if len(constraint_ids) != len(set(constraint_ids)):
+        errors.append("Constraint IDs must be unique.")
+
+    if not plan.get("task_summary"):
+        warnings.append("Plan has no task summary.")
+
+    return {
+        "valid": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "step_count": len(steps),
+        "constraint_count": len(plan.get("constraints", [])),
+    }
+
+
+def _truthy(value) -> bool:
+    if value is None:
+        return False
+
+    if isinstance(value, str):
+        return bool(value.strip())
+
+    return bool(value)
+
+
+def evaluate_rule(rule: dict, event_by_id: dict) -> dict:
+    """Evaluate a supported rule against a named trace event."""
+    event_id = rule.get("event_id")
+
+    if not event_id:
+        return {
+            "status": "not_evaluable",
+            "reason": "Rule does not specify an event_id.",
+        }
+
+    event = event_by_id.get(event_id)
 
     if event is None:
         return {
             "status": "not_evaluable",
-            "reason": "Referenced event is missing or ambiguous.",
+            "reason": f"Event {event_id} was not supplied.",
         }
 
-    value = event.get(rule["field"])
-    operator = rule["operator"]
+    field = rule.get("field")
+    operator = rule.get("operator")
     expected = rule.get("expected_value")
+    actual = event.get(field)
 
-    try:
-        if operator == "equals":
-            passed = value == expected
-        elif operator == "not_equals":
-            passed = value != expected
-        elif operator == "exists":
-            passed = value is not None and value != ""
-        elif operator == "truthy":
-            passed = bool(value)
-        elif operator == "contains":
-            passed = expected in value if value is not None else False
-        else:
-            return {
-                "status": "not_evaluable",
-                "reason": "Unsupported operator.",
-            }
-    except (TypeError, ValueError):
+    if field not in SUPPORTED_RULE_FIELDS:
         return {
             "status": "not_evaluable",
-            "reason": "Values could not be compared.",
+            "reason": f"Unsupported rule field: {field}.",
+        }
+
+    if operator not in SUPPORTED_OPERATORS:
+        return {
+            "status": "not_evaluable",
+            "reason": f"Unsupported operator: {operator}.",
+        }
+
+    if operator == "exists":
+        passed = actual is not None and actual != ""
+
+    elif operator == "truthy":
+        passed = _truthy(actual)
+
+    elif operator == "equals":
+        passed = actual == expected
+
+    elif operator == "not_equals":
+        passed = actual != expected
+
+    elif operator == "contains":
+        if not isinstance(actual, (str, list, tuple, set)):
+            return {
+                "status": "not_evaluable",
+                "reason": (
+                    "The contains operator requires text or a collection."
+                ),
+            }
+
+        if not isinstance(expected, str):
+            return {
+                "status": "not_evaluable",
+                "reason": (
+                    "The expected value for contains must be a string."
+                ),
+            }
+
+        passed = expected in actual
+
+    else:
+        return {
+            "status": "not_evaluable",
+            "reason": "Unsupported operator.",
         }
 
     return {
         "status": "passed" if passed else "failed",
-        "event_id": event.get("event_id"),
-        "field": rule["field"],
-        "observed": value,
-        "expected": expected,
+        "event_id": event_id,
+        "field": field,
         "operator": operator,
+        "expected_value": expected,
+        "actual_value": actual,
     }
 
 
@@ -94,122 +289,142 @@ def verify_run(
     events: list[dict],
     causal_conclusion: str = "undetermined",
 ) -> dict:
+    """Check trace consistency and evidence completeness."""
+    plan_validation = validate_plan_structure(plan)
     steps = plan.get("steps", [])
-    step_ids = {step.get("id") for step in steps}
+    known_steps = {
+        step.get("id")
+        for step in steps
+        if step.get("id")
+    }
 
-    ids: list[str | None] = [event.get("event_id") for event in events]
-    duplicates = sorted({
-        value for value in ids
-        if value is not None and ids.count(value) > 1
+    event_ids = [event.get("event_id") for event in events]
+    duplicate_event_ids = sorted({
+        event_id for event_id in event_ids
+        if event_id and event_ids.count(event_id) > 1
     })
 
-    unknown_steps = sorted({
+    unknown_step_ids = sorted({
         step_id
         for event in events
         if isinstance(step_id := event.get("step_id"), str)
-        and step_id not in step_ids
+        and step_id not in known_steps
     })
 
-    cycles = dependency_cycles(steps)
+    unknown_status_events = [
+        event.get("event_id")
+        for event in events
+        if event.get("status", "unknown") == "unknown"
+    ]
 
-    failed_events = sorted(
-        event["event_id"]
+    failed_events = [
+        event.get("event_id")
         for event in events
         if event.get("status") == "failed"
-    )
+    ]
 
-    failed_pre = sorted(
-        event["event_id"]
+    failed_preconditions = [
+        event.get("event_id")
         for event in events
         if event.get("preconditions_met") is False
-    )
+    ]
 
-    failed_post = sorted(
-        event["event_id"]
+    failed_postconditions = [
+        event.get("event_id")
         for event in events
         if event.get("postconditions_met") is False
-    )
+    ]
 
-    by_event = {
-        event["event_id"]: event
+    event_by_id = {
+        event.get("event_id"): event
         for event in events
         if event.get("event_id")
     }
 
-    constraints = []
+    constraint_results = []
 
     for constraint in plan.get("constraints", []):
-        if constraint.get("rule"):
-            constraints.append({
-                "constraint_id": constraint.get("id"),
-                "statement": constraint.get("statement"),
-                **evaluate_rule(constraint["rule"], by_event),
-            })
-        else:
-            constraints.append({
-                "constraint_id": constraint.get("id"),
-                "statement": constraint.get("statement"),
+        rule = constraint.get("rule")
+
+        if not rule:
+            result = {
                 "status": "not_evaluable",
-                "reason": "No explicit machine-checkable rule was supplied.",
-            })
+                "reason": (
+                    "Constraint has no supported machine-checkable rule; "
+                    "human review is required."
+                ),
+            }
+        else:
+            result = evaluate_rule(rule, event_by_id)
 
-    if not events or any(
-        event.get("status") == "unknown" for event in events
-    ):
-        completeness = "incomplete"
-    elif any(
-        event.get("input_observation") is None
-        or event.get("output_observation") is None
+        constraint_results.append({
+            "constraint_id": constraint.get("id"),
+            "statement": constraint.get("statement"),
+            **result,
+        })
+
+    observed_step_ids = {
+        event.get("step_id")
         for event in events
-    ):
-        completeness = "partial"
-    else:
-        completeness = "recorded"
+        if event.get("step_id")
+        and event.get("status") != "unknown"
+        and event.get("source")
+        != "generated_template_pending_observation"
+    }
 
-    notes = [
-        "Checks apply only to entered evidence; they cannot establish "
-        "that observations are truthful or complete."
-    ]
+    missing_step_ids = sorted(known_steps - observed_step_ids)
 
-    if cycles:
+    notes = []
+
+    if duplicate_event_ids:
+        notes.append("Duplicate event IDs were found.")
+
+    if unknown_step_ids:
+        notes.append("Trace references step IDs absent from the plan.")
+
+    if unknown_status_events:
+        notes.append("Some trace events have unknown outcomes.")
+
+    if missing_step_ids:
         notes.append(
-            "The plan contains dependency cycles; causal ordering may be ambiguous."
-        )
-
-    if unknown_steps:
-        notes.append(
-            "Some events reference step IDs absent from the plan."
-        )
-
-    if duplicates:
-        notes.append(
-            "Duplicate event IDs make evidence references ambiguous."
+            "Some planned steps have no known-status observation."
         )
 
     if any(
         item["status"] == "not_evaluable"
-        for item in constraints
+        for item in constraint_results
     ):
         notes.append(
-            "Some constraints could not be checked mechanically and require review."
+            "One or more constraints require manual evaluation."
         )
 
-    if causal_conclusion == "undetermined":
+    if failed_events or failed_preconditions or failed_postconditions:
         notes.append(
-            "Temporal order and model confidence alone do not establish causation."
+            "At least one event or precondition/postcondition check failed."
         )
+
+    # Do not infer causal proof from temporal order or failure alone.
+    conclusion = causal_conclusion or "undetermined"
+
+    if conclusion not in {
+        "undetermined",
+        "intervention_supported",
+        "not_supported",
+    }:
+        conclusion = "undetermined"
 
     return {
+        "plan_validation": plan_validation,
         "trace_event_count": len(events),
-        "unknown_step_ids": unknown_steps,
-        "duplicate_event_ids": duplicates,
-        "dependency_cycles": cycles,
+        "duplicate_event_ids": duplicate_event_ids,
+        "unknown_step_ids": unknown_step_ids,
+        "unknown_status_events": unknown_status_events,
         "failed_events": failed_events,
-        "failed_preconditions": failed_pre,
-        "failed_postconditions": failed_post,
-        "constraint_results": constraints,
-        "evidence_completeness": completeness,
-        "causal_conclusion": causal_conclusion,
+        "failed_preconditions": failed_preconditions,
+        "failed_postconditions": failed_postconditions,
+        "missing_step_ids": missing_step_ids,
+        "constraint_results": constraint_results,
+        "causal_conclusion": conclusion,
         "notes": notes,
     }
 
@@ -218,80 +433,132 @@ def intervention_assessment(
     payload: dict,
     known_step_ids: set[str],
 ) -> dict:
-    if payload["candidate_step_id"] not in known_step_ids:
+    """Assess reported intervention results conservatively."""
+    candidate = payload.get("candidate_step_id")
+    executed = payload.get("intervention_was_executed", False)
+    controls = payload.get("conditions_held_constant") or []
+    source = payload.get("evidence_source", "").strip()
+    baseline = payload.get("baseline_outcome")
+    intervention = payload.get("intervention_outcome")
+
+    reasons = []
+
+    if candidate not in known_step_ids:
+        reasons.append("Candidate step is not in the plan.")
+
+    if not executed:
+        reasons.append("The intervention was not reported as executed.")
+
+    if not controls:
+        reasons.append("No controlled conditions were recorded.")
+
+    if not source:
+        reasons.append("No evidence source was supplied.")
+
+    if baseline is None or intervention is None:
+        reasons.append("Baseline or intervention outcome is missing.")
+
+    if reasons:
         return {
             "status": "undetermined",
-            "reason": "Candidate step is not present in the plan.",
+            "reasons": reasons,
+            "human_review_required": True,
         }
 
-    if not payload.get("intervention_was_executed"):
-        return {
-            "status": "undetermined",
-            "reason": (
-                "Intervention was not reported as executed; "
-                "this is a proposed test, not causal evidence."
-            ),
-        }
-
-    if not payload.get("conditions_held_constant"):
-        return {
-            "status": "undetermined",
-            "reason": (
-                "No controlled conditions were recorded, so outcomes "
-                "cannot be causally attributed to this intervention."
-            ),
-        }
-
-    if (
-        payload["baseline_outcome"].strip()
-        == payload["intervention_outcome"].strip()
-    ):
-        return {
-            "status": "not_supported",
-            "reason": (
-                "Recorded outcomes did not differ under the stated intervention."
-            ),
-        }
+    if baseline != intervention:
+        status = "intervention_supported"
+        explanation = (
+            "The reported outcome changed under the intervention. "
+            "This supports a causal hypothesis but does not prove causality."
+        )
+    else:
+        status = "not_supported"
+        explanation = (
+            "The reported outcome did not change. "
+            "This does not rule out causality under other conditions."
+        )
 
     return {
-        "status": "intervention_supported",
-        "reason": (
-            "Reported outcomes differ under the intervention with stated controls. "
-            "This supports, but does not prove, causality; validate the evidence "
-            "source and controls."
-        ),
+        "status": status,
+        "explanation": explanation,
+        "candidate_step_id": candidate,
+        "conditions_held_constant": controls,
+        "evidence_source": source,
+        "human_review_required": True,
     }
 
 
-def validate_step_graph(
-    steps: list[dict],
-    min_steps: int = 1,
-    max_steps: int = 12,
-) -> None:
-    if not min_steps <= len(steps) <= max_steps:
-        raise ValueError(f"expected {min_steps}-{max_steps} steps")
+def assess_retest(plan: dict, events: list[dict]) -> dict:
+    """Assess revised-plan retest evidence without claiming proof."""
+    structure = validate_plan_structure(
+        plan,
+        min_steps=1,
+        max_steps=20,
+    )
 
-    ids = [step.get("id") for step in steps]
+    verification = verify_run(plan, events)
+    steps = plan.get("steps", [])
+    known_steps = {
+        step.get("id")
+        for step in steps
+        if step.get("id")
+    }
 
-    if len(ids) != len(set(ids)) or any(not value for value in ids):
-        raise ValueError("duplicate or missing step IDs")
+    observed_step_ids = {
+        event.get("step_id")
+        for event in events
+        if event.get("step_id")
+        and event.get("status") != "unknown"
+        and event.get("source")
+        != "generated_template_pending_observation"
+    }
 
-    valid = set(ids)
+    unobserved_steps = sorted(known_steps - observed_step_ids)
 
-    for step in steps:
-        unknown = set(step.get("depends_on", [])) - valid
+    constraint_failures = [
+        item for item in verification["constraint_results"]
+        if item.get("status") == "failed"
+    ]
 
-        if unknown:
-            raise ValueError(
-                f"step {step['id']} depends on unknown IDs: {sorted(unknown)}"
-            )
+    unevaluable_constraints = [
+        item for item in verification["constraint_results"]
+        if item.get("status") == "not_evaluable"
+    ]
 
-        if step["id"] in step.get("depends_on", []):
-            raise ValueError(
-                f"step {step['id']} depends on itself"
-            )
+    failures = bool(
+        verification["failed_events"]
+        or verification["failed_preconditions"]
+        or verification["failed_postconditions"]
+        or constraint_failures
+    )
 
-    cycles = dependency_cycles(steps)
+    incomplete = bool(
+        unobserved_steps
+        or verification["unknown_status_events"]
+        or verification["duplicate_event_ids"]
+        or verification["unknown_step_ids"]
+        or unevaluable_constraints
+        or not structure["valid"]
+    )
 
-    if cycles:
-        raise ValueError(f"dependency cycles detected: {cycles}")
+    if failures:
+        status = "retest_failed"
+    elif incomplete:
+        status = "inconclusive"
+    else:
+        status = "recovery_supported_pending_human_review"
+
+    return {
+        "status": status,
+        "plan_validation": structure,
+        "verification": verification,
+        "unobserved_step_ids": unobserved_steps,
+        "constraint_failures": constraint_failures,
+        "unevaluable_constraints": unevaluable_constraints,
+        "human_review_required": True,
+        "limitations": [
+            "Evidence is user-supplied and has not been independently authenticated.",
+            "A successful retest supports recovery but does not prove the repair caused it.",
+            "Semantic constraints require appropriate human or domain-expert review.",
+        ],
+    }

@@ -12,7 +12,6 @@ from google.genai import types, errors
 from pydantic import BaseModel, ValidationError
 
 from .schemas import PlanResponse, DiagnosisResponse, RepairResponse
-from .verification import validate_step_graph
 
 
 DEFAULT_MODEL = "gemini-3.8-flash"
@@ -30,6 +29,60 @@ alternative causes. Do not claim causal verification unless valid controlled int
 present; even then describe its limits. For financial, medical, legal, safety, security, irreversible,
 or external side effects, require human confirmation. Never pretend a model judgment is a formal proof.
 Return only JSON when asked for structured output."""
+
+
+def validate_step_graph(
+    steps: list[dict[str, Any]],
+    min_steps: int = 1,
+    max_steps: int = 12,
+) -> None:
+    """Validate step count, IDs, dependency references, and cycles."""
+    if not min_steps <= len(steps) <= max_steps:
+        raise ValueError(
+            f"step count must be between {min_steps} and {max_steps}; "
+            f"got {len(steps)}"
+        )
+
+    step_ids = [step.get("id") for step in steps]
+    if any(not isinstance(step_id, str) or not step_id for step_id in step_ids):
+        raise ValueError("every step must have a non-empty string ID")
+    if len(step_ids) != len(set(step_ids)):
+        raise ValueError("step IDs must be unique")
+
+    known_ids = set(step_ids)
+    dependencies: dict[str, list[str]] = {}
+    for step in steps:
+        step_id = step["id"]
+        depends_on = step.get("depends_on", [])
+        if not isinstance(depends_on, list) or any(
+            not isinstance(dependency, str) for dependency in depends_on
+        ):
+            raise ValueError(f"step {step_id} dependencies must be a list of IDs")
+        unknown = set(depends_on) - known_ids
+        if unknown:
+            raise ValueError(
+                f"step {step_id} references unknown step IDs: {sorted(unknown)}"
+            )
+        if step_id in depends_on:
+            raise ValueError(f"step {step_id} cannot depend on itself")
+        dependencies[step_id] = depends_on
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(step_id: str) -> None:
+        if step_id in visiting:
+            raise ValueError("step dependencies contain a cycle")
+        if step_id in visited:
+            return
+        visiting.add(step_id)
+        for dependency in dependencies[step_id]:
+            visit(dependency)
+        visiting.remove(step_id)
+        visited.add(step_id)
+
+    for step_id in dependencies:
+        visit(step_id)
 
 
 def _friendly_api_error(exc: Exception) -> str:

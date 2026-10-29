@@ -1,4 +1,3 @@
-
 /* =========================================================
    NS-CR Research Lab — Responsive UI Styles
    Fixes long JSON, diagnosis output and horizontal overflow
@@ -407,11 +406,6 @@ button:active:not(:disabled) {
 
 /* ---------- JSON, code and diagnosis output ---------- */
 
-/*
- * Main fix for the overflowing diagnosis JSON visible in the screenshot.
- * Long strings and unbroken tokens must wrap inside their container.
- */
-
 pre,
 code,
 pre code,
@@ -676,4 +670,30 @@ button:focus-visible {
         animation-duration: 0.01ms !important;
         animation-iteration-count: 1 !important;
     }
+}
+
+/* Additional workflow inputs */
+
+.panel label {
+    display: block;
+    margin: 12px 0 5px;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.panel input[type="text"],
+.panel textarea {
+    width: 100%;
+    min-width: 0;
+}
+
+.check-row {
+    display: flex !important;
+    align-items: flex-start;
+    gap: 9px;
+}
+
+.check-row input {
+    margin-top: 4px;
 }

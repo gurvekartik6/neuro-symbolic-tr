@@ -5,27 +5,24 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>NS-CR Research Lab</title>
-
     <link rel="stylesheet" href="/static/style.css">
 </head>
 
 <body>
     <header>
         <div class="brand">NS</div>
-
         <div>
             <p class="kicker">GEMINI-POWERED RESEARCH PROTOTYPE</p>
             <h1>NS-CR Research Lab</h1>
             <p class="sub">Plan · Diagnose · Repair</p>
         </div>
-
         <span id="service" class="status">Checking service…</span>
     </header>
 
     <main>
         <div id="alert" class="alert hidden"></div>
 
-        <!-- STEP 01: TASK -->
+        <!-- STEP 01 -->
         <section class="panel">
             <div class="step-title">
                 <span>01</span>
@@ -45,12 +42,12 @@
                 placeholder="Describe a workflow you want to analyze."
             ></textarea>
 
-            <button id="planBtn" class="primary">
+            <button id="planBtn" class="primary" type="button">
                 Generate plan with Gemini
             </button>
         </section>
 
-        <!-- STEPS 02–05 -->
+        <!-- STEPS 02–07 -->
         <section id="planPanel" class="panel hidden">
 
             <!-- STEP 02: PLAN -->
@@ -66,42 +63,29 @@
 
             <div class="divider"></div>
 
-            <!-- STEP 03: EXECUTION TRACE -->
+            <!-- STEP 03: TRACE -->
             <div class="step-title">
                 <span>03</span>
                 <div>
                     <h2>Record actual execution evidence</h2>
                     <p>
-                        Generate a trace template from your plan, then update
-                        it with genuine observations. Generated events are
-                        marked unknown until actual outcomes are recorded.
+                        Generate a trace template, then replace placeholders
+                        with genuine observations. Templates remain unknown
+                        until actual outcomes are recorded.
                     </p>
                 </div>
             </div>
 
             <div class="trace-template-actions">
-                <button
-                    id="generateTraceBtn"
-                    class="secondary"
-                    type="button"
-                >
+                <button id="generateTraceBtn" class="secondary" type="button">
                     Generate Trace JSON
                 </button>
-
-                <button
-                    id="copyTraceBtn"
-                    class="secondary"
-                    type="button"
-                >
+                <button id="copyTraceBtn" class="secondary" type="button">
                     Copy Trace JSON
                 </button>
             </div>
 
-            <p
-                id="traceTemplateMessage"
-                role="status"
-                aria-live="polite"
-            ></p>
+            <p id="traceTemplateMessage" role="status" aria-live="polite"></p>
 
             <textarea
                 id="traceJson"
@@ -111,14 +95,19 @@
             ></textarea>
 
             <p class="trace-help">
-                Important: generated entries are templates, not proof of
-                execution. Replace the placeholder observations and unknown
-                statuses only with evidence from actual logs or observations.
+                Generated entries are templates, not proof of execution.
+                Use only real logs and observations. Never change an unknown
+                status unless the actual outcome is known.
             </p>
 
-            <button id="traceBtn" class="secondary" type="button">
-                Save and validate trace
-            </button>
+            <div class="trace-template-actions">
+                <button id="traceBtn" class="secondary" type="button">
+                    Save and validate trace
+                </button>
+                <button id="verifyBtn" class="secondary" type="button">
+                    Re-run verification
+                </button>
+            </div>
 
             <div id="verificationView"></div>
 
@@ -131,8 +120,8 @@
                     <h2>Diagnose a failure</h2>
                     <p>
                         Gemini uses supplied execution events and deterministic
-                        verification. Without evidence, the root cause remains
-                        undetermined.
+                        verification. Without sufficient evidence, the root
+                        cause remains undetermined.
                     </p>
                 </div>
             </div>
@@ -171,6 +160,152 @@
 
                 <div id="repairView"></div>
             </div>
+
+            <!-- STEP 06: AUTOMATIC CAUSAL ANALYSIS -->
+            <div class="divider"></div>
+
+            <div class="step-title">
+                <span>06</span>
+                <div>
+                    <h2>Automatic Causal Analysis</h2>
+                    <p>
+                        Analyze the diagnosis, trace, and intervention
+                        evidence already saved in this workflow.
+                    </p>
+                </div>
+            </div>
+
+            <p class="trace-help">
+                NS-CR reads the saved workflow and identifies evidence gaps.
+                It never invents a baseline or claims an intervention
+                occurred when it did not. An undetermined result is valid
+                when the evidence is insufficient.
+            </p>
+
+            <button
+                id="causalAnalysisBtn"
+                class="primary"
+                type="button"
+            >
+                Analyze saved workflow evidence
+            </button>
+
+            <div id="counterfactualView"></div>
+
+            <!-- Only shown when analysis identifies missing intervention evidence -->
+            <details id="additionalInterventionEvidence" class="hidden">
+                <summary>Provide missing intervention evidence</summary>
+
+                <p class="trace-help">
+                    Complete this section only if the intervention was
+                    actually performed and the outcomes were observed.
+                    Do not guess missing values.
+                </p>
+
+                <label for="cfStep">Candidate step ID</label>
+                <input
+                    id="cfStep"
+                    type="text"
+                    maxlength="40"
+                    placeholder="e.g. step_2"
+                >
+
+                <label for="cfDescription">Intervention performed</label>
+                <textarea
+                    id="cfDescription"
+                    rows="2"
+                    maxlength="2000"
+                    placeholder="Describe the specific change actually made."
+                ></textarea>
+
+                <label for="cfBaseline">Observed baseline outcome</label>
+                <textarea
+                    id="cfBaseline"
+                    rows="2"
+                    maxlength="2000"
+                    placeholder="Recorded outcome before the intervention."
+                ></textarea>
+
+                <label for="cfOutcome">Observed outcome after intervention</label>
+                <textarea
+                    id="cfOutcome"
+                    rows="2"
+                    maxlength="2000"
+                    placeholder="Recorded outcome after the intervention."
+                ></textarea>
+
+                <label for="cfControls">
+                    Conditions held constant (one per line)
+                </label>
+                <textarea
+                    id="cfControls"
+                    rows="3"
+                    placeholder="Only list conditions known to have been held constant."
+                ></textarea>
+
+                <label for="cfSource">Evidence source</label>
+                <input
+                    id="cfSource"
+                    type="text"
+                    maxlength="500"
+                    placeholder="Log file, measurement record, test report…"
+                >
+
+                <label class="check-row">
+                    <input id="cfExecuted" type="checkbox">
+                    I actually performed this intervention and observed
+                    both outcomes.
+                </label>
+
+                <button
+                    id="counterfactualBtn"
+                    class="secondary"
+                    type="button"
+                >
+                    Save evidence and re-analyze
+                </button>
+            </details>
+
+            <!-- STEP 07: RETEST -->
+            <div class="divider"></div>
+
+            <div class="step-title">
+                <span>07</span>
+                <div>
+                    <h2>Retest the proposed repair</h2>
+                    <p>
+                        Use genuine post-repair observations for every
+                        revised step. Generated templates remain unknown
+                        until replaced with actual evidence.
+                    </p>
+                </div>
+            </div>
+
+            <p class="trace-help">
+                Retest requires a saved repair proposal and revised plan.
+                The app does not execute the repair for you.
+            </p>
+
+            <button
+                id="generateRetestTraceBtn"
+                class="secondary"
+                type="button"
+            >
+                Generate retest trace template
+            </button>
+
+            <textarea
+                id="retestTraceJson"
+                rows="10"
+                spellcheck="false"
+                placeholder="Generate a retest template, then replace placeholders with real observations."
+            ></textarea>
+
+            <button id="retestBtn" class="primary" type="button">
+                Validate and save retest
+            </button>
+
+            <div id="retestView"></div>
         </section>
 
         <!-- SAVED RUNS -->
@@ -196,10 +331,7 @@
         </footer>
     </main>
 
-    <!-- Existing application logic -->
-    <script src="/static/app.js?v=20261029-3" defer></script>
-
-    <!-- New automatic trace-template feature -->
-    <script src="/static/trace-template.js?v=20261029-1" defer></script>
+    <script src="/static/app.js?v=20261029-5" defer></script>
+    <script src="/static/trace-template.js?v=20261029-2" defer></script>
 </body>
 </html>
