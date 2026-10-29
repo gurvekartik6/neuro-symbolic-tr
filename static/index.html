@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NS-CR Research Lab</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><header><div class="brand">NS</div><div><p class="kicker">GEMINI-POWERED RESEARCH PROTOTYPE</p><h1>NS-CR Research Lab</h1><p class="sub">Plan · Diagnose · Repair</p></div><span id="service" class="status">Checking service…</span></header>
+<main><div id="alert" class="alert hidden"></div>
+<section class="panel"><div class="step-title"><span>01</span><div><h2>Describe your task</h2><p>Gemini will create a structured plan and explicit constraints. No actions are executed.</p></div></div>
+<textarea id="task" rows="4" maxlength="6000" placeholder="Describe a real workflow you want to analyze. Include the goal, context, constraints, and what a successful outcome means."></textarea>
+<button id="planBtn" class="primary">Generate plan with Gemini</button></section>
+<section id="planPanel" class="panel hidden"><div class="step-title"><span>02</span><div><h2>Plan and dependencies</h2><p id="runMeta"></p></div></div><div id="planView"></div><div class="divider"></div>
+<div class="divider"></div>
+<div class="step-title"><span>03</span><div><h2>Record actual execution evidence</h2><p>Paste real events from your logs or observations as JSON. Do not enter guessed or invented outcomes. Event fields: event_id, step_id, status, source, input_observation, output_observation, preconditions_met, postconditions_met, timestamp (optional).</p></div></div>
+<textarea id="traceJson" rows="8" spellcheck="false" placeholder="Paste a JSON array containing your actual recorded events. Do not enter guessed or invented outcomes."></textarea>
+<button id="traceBtn" class="secondary">Save and validate trace</button><div id="verificationView"></div>
+<div class="divider"></div>
+<div class="step-title"><span>04</span><div><h2>Diagnose a failure</h2><p>Gemini will use the supplied execution events and deterministic verification report. Without a trace, root cause remains undetermined.</p></div></div>
+<textarea id="issue" rows="3" maxlength="3000" placeholder="What went wrong? Include actual observations or errors."></textarea>
+<button id="diagnoseBtn" class="primary">Diagnose with Gemini</button><div id="diagnosisView"></div>
+<div id="repairArea" class="hidden"><div class="divider"></div><div class="step-title"><span>05</span><div><h2>Propose a repair</h2><p>Generate a minimal revision and identify which steps can be preserved.</p></div></div><button id="repairBtn" class="primary">Generate repair proposal</button><div id="repairView"></div></div></section>
+<section class="panel"><div class="step-title"><span>↻</span><div><h2>Saved runs</h2><p>Runs are stored locally in SQLite on this server.</p></div><button id="refreshBtn" class="secondary">Refresh</button></div><div id="runs" class="runs">Loading saved runs…</div></section>
+<footer>NS-CR · Gemini API · Local SQLite · Human review required for consequential actions</footer></main><script src="/static/app.js"></script></body></html>
