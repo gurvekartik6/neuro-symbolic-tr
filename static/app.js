@@ -1,1719 +1,727 @@
 
 "use strict";
 
-/*
- * NS-CR — Neuro-Symbolic Causal Recovery
- * Frontend API client
- *
- * Features:
- * - 10-minute request timeout
- * - Server-Sent Events (SSE) streaming
- * - Plan generation
- * - Trace submission
- * - Verification
- * - Diagnosis
- * - Counterfactual analysis
- * - Repair
- * - Saved runs
- *
- * API base: same origin as the FastAPI server.
- */
+const API = {
+  health: "/api/health",
+  plan: "/api/plan",
+  streamPlan: "/api/plan/stream",
+  trace: "/api/trace",
+  verify: "/api/verify",
+  diagnose: "/api/diagnose",
+  repair: "/api/repair",
+  counterfactual: "/api/counterfactual",
+  runs: "/api/runs"
+};
 
 const REQUEST_TIMEOUT_MS = 600000;
 const STREAM_TIMEOUT_MS = 600000;
 
-const API = {
-    health: "/api/health",
-    plan: "/api/plan",
-    streamPlan: "/api/plan/stream",
-    trace: "/api/trace",
-    verify: "/api/verify",
-    diagnose: "/api/diagnose",
-    counterfactual: "/api/counterfactual",
-    repair: "/api/repair",
-    runs: "/api/runs"
-};
-
 let currentRunId = null;
 let currentPlan = null;
-let currentTrace = [];
 let activeController = null;
-let isGenerating = false;
+let busy = false;
 
-/* -------------------------------------------------------
-   DOM HELPERS
-------------------------------------------------------- */
-
-function $(...ids) {
-    for (const id of ids) {
-        const element = document.getElementById(id);
-        if (element) return element;
-    }
-    return null;
-}
-
-function firstExisting(...selectors) {
-    for (const selector of selectors) {
-        const element = document.querySelector(selector);
-        if (element) return element;
-    }
-    return null;
-}
-
-function getValue(...ids) {
-    const element = $(...ids);
-    return element ? String(element.value ?? "").trim() : "";
-}
-
-function setValue(value, ...ids) {
-    const element = $(...ids);
-    if (element) element.value = value ?? "";
-}
-
-function setText(value, ...ids) {
-    const element = $(...ids);
-    if (element) element.textContent = value ?? "";
-}
-
-function setHTML(value, ...ids) {
-    const element = $(...ids);
-    if (element) element.innerHTML = value ?? "";
-}
-
-function show(element, visible = true) {
-    if (!element) return;
-    element.hidden = !visible;
-    element.style.display = visible ? "" : "none";
-}
+const $ = id => document.getElementById(id);
+const pretty = value => JSON.stringify(value, null, 2);
 
 function escapeHTML(value) {
-    return String(value ?? "")
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
+  return String(value ?? "").replace(/[&<>"']/g, char => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[char]);
 }
 
-function prettyJSON(value) {
-    return JSON.stringify(value, null, 2);
+function showElement(id, show = true) {
+  const element = $(id);
+  if (element) element.classList.toggle("hidden", !show);
 }
 
-function parseJSONInput(value, fallback = []) {
-    if (!value) return fallback;
+function status(message, type = "info") {
+  const alert = $("alert");
 
-    try {
-        return JSON.parse(value);
-    } catch {
-        throw new Error("Please enter valid JSON in the input field.");
-    }
-}
+  if (alert) {
+    alert.textContent = message;
+    alert.classList.remove("hidden");
+    alert.dataset.type = type;
+    alert.setAttribute("role", type === "error" ? "alert" : "status");
+  }
 
-function setStatus(message, type = "info") {
-    const element = $(
-        "status",
-        "statusMessage",
-        "appStatus",
-        "globalStatus",
-        "message"
-    );
-
-    if (element) {
-        element.textContent = message;
-        element.dataset.type = type;
-        element.className = `status status-${type}`;
-        show(element);
-    }
-
-    console.log(`[NS-CR ${type.toUpperCase()}] ${message}`);
+  console[type === "error" ? "error" : "log"](
+    `[NS-CR ${type.toUpperCase()}] ${message}`
+  );
 }
 
 function showError(error) {
-    const message = error instanceof Error
-        ? error.message
-        : String(error);
+  status(error?.message || String(error), "error");
+}
 
-    setStatus(message, "error");
+function updateRun(runId) {
+  if (!runId) return;
 
-    const output = $(
-        "errorOutput",
-        "errorMessage",
-        "apiError",
-        "errorBox"
+  currentRunId = String(runId);
+
+  const meta = $("runMeta");
+  if (meta) meta.textContent = `Run ID: ${currentRunId}`;
+}
+
+function renderJSON(id, data) {
+  const target = $(id);
+  if (!target) return;
+
+  const text = pretty(data);
+
+  // JSON is displayed as text, never interpreted as HTML.
+  target.replaceChildren();
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "result";
+
+  const pre = document.createElement("pre");
+  pre.textContent = text;
+
+  wrapper.appendChild(pre);
+  target.appendChild(wrapper);
+  target.classList.remove("hidden");
+}
+
+function renderPlan(plan, runId, model) {
+  if (!plan || !Array.isArray(plan.steps)) {
+    throw new Error(
+      "The server did not return a valid plan containing a steps array."
     );
+  }
 
-    if (output) {
-        output.textContent = message;
-        show(output);
-    }
+  currentPlan = plan;
+  if (runId) updateRun(runId);
+
+  const meta = $("runMeta");
+  if (meta && model) {
+    meta.textContent =
+      `Run ID: ${currentRunId || "not saved"} · Model: ${model}`;
+  }
+
+  const target = $("planView");
+  if (!target) {
+    console.warn("Missing #planView in static/index.html.");
+    return;
+  }
+
+  const heading = document.createElement("h3");
+  heading.textContent = plan.task_summary || "Generated plan";
+
+  const container = document.createElement("div");
+  container.className = "result";
+
+  container.appendChild(heading);
+
+  plan.steps.forEach((step, index) => {
+    const article = document.createElement("article");
+    article.className = "step";
+
+    const title = document.createElement("h3");
+    title.textContent = `${index + 1}. ${step.action || step.id}`;
+    article.appendChild(title);
+
+    const fields = [
+      ["Step ID", step.id],
+      ["Rationale", step.rationale],
+      ["Expected result", step.expected_result],
+      ["Risk", step.risk || "medium"],
+      ["Dependencies", (step.depends_on || []).join(", ") || "None"],
+      ["Reversible", step.reversible === false ? "No" : "Yes"]
+    ];
+
+    fields.forEach(([label, value]) => {
+      const p = document.createElement("p");
+      const strong = document.createElement("strong");
+      strong.textContent = `${label}: `;
+      p.append(strong, document.createTextNode(String(value ?? "Not provided")));
+      article.appendChild(p);
+    });
+
+    container.appendChild(article);
+  });
+
+  const addList = (title, items) => {
+    if (!Array.isArray(items) || items.length === 0) return;
+
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+    container.appendChild(heading);
+
+    const list = document.createElement("ul");
+
+    items.forEach(item => {
+      const li = document.createElement("li");
+      li.textContent = typeof item === "string" ? item : pretty(item);
+      list.appendChild(li);
+    });
+
+    container.appendChild(list);
+  };
+
+  addList("Assumptions", plan.assumptions);
+  addList("Constraints", plan.constraints);
+  addList("Uncertainty notes", plan.uncertainty_notes);
+
+  const notice = document.createElement("p");
+  notice.className = "notice";
+  notice.textContent =
+    "This is a proposed plan. No real-world actions were executed.";
+  container.appendChild(notice);
+
+  target.replaceChildren(container);
+  showElement("planPanel", true);
 }
-
-function clearError() {
-    const output = $(
-        "errorOutput",
-        "errorMessage",
-        "apiError",
-        "errorBox"
-    );
-
-    if (output) {
-        output.textContent = "";
-        show(output, false);
-    }
-}
-
-function setLoading(loading, message = "Working...") {
-    isGenerating = loading;
-
-    const button = $(
-        "generateBtn",
-        "generatePlanBtn",
-        "planBtn",
-        "submitPlan",
-        "runBtn"
-    );
-
-    if (button) {
-        button.disabled = loading;
-
-        if (!button.dataset.originalText) {
-            button.dataset.originalText =
-                button.textContent.trim() || "Generate Plan";
-        }
-
-        button.textContent = loading
-            ? message
-            : button.dataset.originalText;
-    }
-
-    document.body.classList.toggle("is-loading", loading);
-}
-
-function getRunId(data) {
-    if (!data || typeof data !== "object") return null;
-
-    return (
-        data.run_id ??
-        data.runId ??
-        data.id ??
-        data.run?.run_id ??
-        data.run?.id ??
-        null
-    );
-}
-
-function updateCurrentRun(data) {
-    const runId = getRunId(data);
-
-    if (runId) {
-        currentRunId = String(runId);
-
-        setText(
-            currentRunId,
-            "currentRunId",
-            "runId",
-            "activeRunId"
-        );
-    }
-
-    return currentRunId;
-}
-
-/* -------------------------------------------------------
-   HTTP REQUEST HELPER
-------------------------------------------------------- */
 
 async function request(url, options = {}) {
-    const controller = new AbortController();
+  const timeoutMs = options.timeout ?? REQUEST_TIMEOUT_MS;
+  const controller = new AbortController();
 
-    const timeout = setTimeout(
-        () => controller.abort(),
-        options.timeout ?? REQUEST_TIMEOUT_MS
-    );
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const headers = new Headers(options.headers || {});
 
-    const headers = new Headers(options.headers || {});
+  headers.set("Accept", "application/json");
 
-    if (
-        options.body !== undefined &&
-        !headers.has("Content-Type")
-    ) {
-        headers.set("Content-Type", "application/json");
-    }
+  if (options.body !== undefined) {
+    headers.set("Content-Type", "application/json");
+  }
 
-    headers.set("Accept", "application/json");
-
-    try {
-        const response = await fetch(url, {
-            ...options,
-            headers,
-            signal: controller.signal
-        });
-
-        const raw = await response.text();
-
-        let data = null;
-
-        if (raw) {
-            try {
-                data = JSON.parse(raw);
-            } catch {
-                data = { detail: raw };
-            }
-        }
-
-        if (!response.ok) {
-            const detail =
-                data?.detail ??
-                data?.error ??
-                data?.message ??
-                `HTTP ${response.status}: ${response.statusText}`;
-
-            throw new Error(
-                typeof detail === "string"
-                    ? detail
-                    : prettyJSON(detail)
-            );
-        }
-
-        return data;
-    } catch (error) {
-        if (error.name === "AbortError") {
-            throw new Error(
-                `The request exceeded ${Math.round(
-                    (options.timeout ?? REQUEST_TIMEOUT_MS) / 60000
-                )} minutes. Check the FastAPI terminal and Gemini API response.`
-            );
-        }
-
-        if (
-            error instanceof TypeError &&
-            !navigator.onLine
-        ) {
-            throw new Error(
-                "Network connection lost. Check your internet connection and FastAPI server."
-            );
-        }
-
-        throw error;
-    } finally {
-        clearTimeout(timeout);
-    }
-}
-
-async function postJSON(url, body, timeout = REQUEST_TIMEOUT_MS) {
-    return request(url, {
-        method: "POST",
-        body: JSON.stringify(body),
-        timeout
+  try {
+    const response = await fetch(url, {
+      ...options,
+      headers,
+      signal: controller.signal,
+      cache: "no-store"
     });
+
+    const raw = await response.text();
+    let data = null;
+
+    if (raw) {
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        data = { detail: raw };
+      }
+    }
+
+    if (!response.ok) {
+      const detail =
+        data?.detail ??
+        data?.message ??
+        data?.error ??
+        `HTTP ${response.status}: ${response.statusText}`;
+
+      throw new Error(
+        typeof detail === "string" ? detail : pretty(detail)
+      );
+    }
+
+    return data;
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error(
+        `Request timed out after ${Math.round(timeoutMs / 60000)} minutes. ` +
+        "Check the FastAPI terminal and Gemini API response."
+      );
+    }
+
+    if (error instanceof TypeError) {
+      throw new Error(
+        `Could not connect to the API at ${url}. ` +
+        "Check that FastAPI is running and that you opened its URL."
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-/* -------------------------------------------------------
-   OUTPUT HELPERS
-------------------------------------------------------- */
-
-function renderJSON(data, ...ids) {
-    const element = $(...ids);
-
-    if (!element) {
-        console.log(data);
-        return;
-    }
-
-    element.textContent = prettyJSON(data);
-    show(element);
+async function postJSON(url, payload) {
+  return request(url, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
 }
-
-function renderResult(data, ...ids) {
-    const element = $(...ids);
-
-    if (!element) {
-        console.log(data);
-        return;
-    }
-
-    if (typeof data === "string") {
-        element.textContent = data;
-    } else {
-        element.textContent = prettyJSON(data);
-    }
-
-    show(element);
-}
-
-function renderPlan(plan) {
-    currentPlan = plan;
-
-    const output = $(
-        "planOutput",
-        "planResult",
-        "generatedPlan",
-        "planContainer"
-    );
-
-    if (!output) {
-        console.log("Generated plan:", plan);
-        return;
-    }
-
-    const steps = Array.isArray(plan?.steps)
-        ? plan.steps
-        : [];
-
-    if (!steps.length) {
-        output.textContent = prettyJSON(plan);
-        show(output);
-        return;
-    }
-
-    const heading = escapeHTML(
-        plan.task_summary ?? "Generated recovery plan"
-    );
-
-    const assumptions = Array.isArray(plan.assumptions)
-        ? plan.assumptions
-        : [];
-
-    const constraints = Array.isArray(plan.constraints)
-        ? plan.constraints
-        : [];
-
-    const uncertainty = Array.isArray(plan.uncertainty_notes)
-        ? plan.uncertainty_notes
-        : [];
-
-    output.innerHTML = `
-        <section class="plan-result">
-            <h3>${heading}</h3>
-
-            <div class="plan-step-list">
-                ${steps.map((step, index) => `
-                    <article class="plan-step">
-                        <h4>
-                            Step ${index + 1}:
-                            ${escapeHTML(step.action ?? step.id ?? "Action")}
-                        </h4>
-
-                        <p>
-                            <strong>ID:</strong>
-                            ${escapeHTML(step.id ?? "N/A")}
-                        </p>
-
-                        <p>
-                            <strong>Rationale:</strong>
-                            ${escapeHTML(step.rationale ?? "Not provided")}
-                        </p>
-
-                        <p>
-                            <strong>Expected result:</strong>
-                            ${escapeHTML(
-                                step.expected_result ?? "Not provided"
-                            )}
-                        </p>
-
-                        <p>
-                            <strong>Dependencies:</strong>
-                            ${escapeHTML(
-                                (step.depends_on ?? []).join(", ") || "None"
-                            )}
-                        </p>
-
-                        <p>
-                            <strong>Risk:</strong>
-                            ${escapeHTML(step.risk ?? "medium")}
-                        </p>
-
-                        <p>
-                            <strong>Reversible:</strong>
-                            ${step.reversible === false ? "No" : "Yes"}
-                        </p>
-                    </article>
-                `).join("")}
-            </div>
-
-            ${assumptions.length ? `
-                <h4>Assumptions</h4>
-                <ul>
-                    ${assumptions.map(item =>
-                        `<li>${escapeHTML(item)}</li>`
-                    ).join("")}
-                </ul>
-            ` : ""}
-
-            ${constraints.length ? `
-                <h4>Constraints</h4>
-                <pre>${escapeHTML(prettyJSON(constraints))}</pre>
-            ` : ""}
-
-            ${uncertainty.length ? `
-                <h4>Uncertainty notes</h4>
-                <ul>
-                    ${uncertainty.map(item =>
-                        `<li>${escapeHTML(item)}</li>`
-                    ).join("")}
-                </ul>
-            ` : ""}
-        </section>
-    `;
-
-    show(output);
-
-    const rawOutput = $(
-        "planJSON",
-        "planRawJSON",
-        "rawPlanOutput"
-    );
-
-    if (rawOutput) {
-        rawOutput.textContent = prettyJSON(plan);
-    }
-
-    const stepsInput = $(
-        "stepsInput",
-        "revisedStepsInput",
-        "repairSteps"
-    );
-
-    if (stepsInput) {
-        stepsInput.value = prettyJSON(steps);
-    }
-}
-
-function renderRuns(runs) {
-    const output = $(
-        "runsOutput",
-        "savedRuns",
-        "runsList",
-        "historyOutput"
-    );
-
-    if (!output) {
-        console.log("Saved runs:", runs);
-        return;
-    }
-
-    const list = Array.isArray(runs)
-        ? runs
-        : Array.isArray(runs?.runs)
-            ? runs.runs
-            : Array.isArray(runs?.items)
-                ? runs.items
-                : [];
-
-    if (!list.length) {
-        output.textContent = "No saved runs found.";
-        show(output);
-        return;
-    }
-
-    output.innerHTML = list.map(run => {
-        const id = getRunId(run);
-        const summary =
-            run.task_summary ??
-            run.task ??
-            run.title ??
-            "Saved run";
-
-        return `
-            <article class="saved-run">
-                <h4>${escapeHTML(summary)}</h4>
-                <p>Run ID: ${escapeHTML(id ?? "N/A")}</p>
-                <button
-                    type="button"
-                    data-load-run="${escapeHTML(id ?? "")}"
-                    ${id ? "" : "disabled"}
-                >
-                    Load run
-                </button>
-            </article>
-        `;
-    }).join("");
-
-    show(output);
-}
-
-/* -------------------------------------------------------
-   SSE STREAM PARSER
-------------------------------------------------------- */
 
 function parseSSEBlock(block) {
-    const lines = block.split(/\r?\n/);
+  let eventName = "message";
+  const dataLines = [];
 
-    let event = "message";
-    const dataLines = [];
+  for (const line of block.split(/\r?\n/)) {
+    if (!line || line.startsWith(":")) continue;
 
-    for (const line of lines) {
-        if (!line || line.startsWith(":")) {
-            continue;
-        }
-
-        if (line.startsWith("event:")) {
-            event = line.slice(6).trim();
-        } else if (line.startsWith("data:")) {
-            dataLines.push(line.slice(5).trimStart());
-        }
+    if (line.startsWith("event:")) {
+      eventName = line.slice(6).trim();
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
     }
+  }
 
-    if (!dataLines.length) return null;
+  if (!dataLines.length) return null;
 
-    const rawData = dataLines.join("\n");
+  const raw = dataLines.join("\n");
 
-    let data = rawData;
-
-    try {
-        data = JSON.parse(rawData);
-    } catch {
-        // Plain text SSE data is also supported.
-    }
-
-    return { event, data };
+  try {
+    return { eventName, data: JSON.parse(raw) };
+  } catch {
+    return { eventName, data: { message: raw } };
+  }
 }
 
-function extractStreamText(data) {
-    if (typeof data === "string") return data;
+async function streamPlan(payload) {
+  if (activeController) activeController.abort();
 
-    if (!data || typeof data !== "object") return "";
+  const controller = new AbortController();
+  activeController = controller;
 
-    return (
-        data.text ??
-        data.token ??
-        data.content ??
-        data.delta ??
-        data.message ??
-        ""
-    );
-}
+  let timedOut = false;
+  let reader = null;
 
-function handleStreamEvent(parsed, callbacks) {
-    if (!parsed) return;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, STREAM_TIMEOUT_MS);
 
-    const { event, data } = parsed;
-
-    if (event === "error" || data?.error) {
-        const message =
-            data?.error ??
-            data?.detail ??
-            data?.message ??
-            "The streaming endpoint returned an error.";
-
-        throw new Error(
-            typeof message === "string"
-                ? message
-                : prettyJSON(message)
-        );
-    }
-
-    if (event === "done" || event === "complete") {
-        callbacks.onDone?.(data);
-        return;
-    }
-
-    if (
-        event === "plan" ||
-        event === "result" ||
-        event === "complete_plan"
-    ) {
-        callbacks.onPlan?.(data);
-        return;
-    }
-
-    if (event === "progress" || event === "status") {
-        const message =
-            typeof data === "string"
-                ? data
-                : data?.message ?? data?.status ?? "";
-
-        if (message) callbacks.onProgress?.(message);
-        return;
-    }
-
-    const text = extractStreamText(data);
-
-    if (text) callbacks.onText?.(text, data);
-
-    if (data && typeof data === "object") {
-        if (data.run_id || data.runId) {
-            updateCurrentRun(data);
-        }
-
-        if (data.plan && typeof data.plan === "object") {
-            callbacks.onPlan?.(data.plan);
-        }
-
-        if (
-            Array.isArray(data.steps) &&
-            (data.task_summary || data.assumptions)
-        ) {
-            callbacks.onPlan?.(data);
-        }
-
-        if (data.type === "error") {
-            throw new Error(
-                data.message ?? "The server reported a stream error."
-            );
-        }
-    }
-}
-
-async function streamPlan(url, body, callbacks = {}) {
-    if (activeController) {
-        activeController.abort();
-    }
-
-    const controller = new AbortController();
-    activeController = controller;
-
-    let timeoutReached = false;
-
-    const timeout = setTimeout(() => {
-        timeoutReached = true;
-        controller.abort();
-    }, STREAM_TIMEOUT_MS);
-
-    const headers = new Headers({
+  try {
+    const response = await fetch(API.streamPlan, {
+      method: "POST",
+      headers: {
         "Content-Type": "application/json",
-        "Accept": "text/event-stream, application/json"
+        "Accept": "text/event-stream"
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+      cache: "no-store"
     });
 
-    let reader = null;
+    if (!response.ok) {
+      const raw = await response.text();
+      let detail = raw;
 
-    try {
-        const response = await fetch(url, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(body),
-            signal: controller.signal,
-            cache: "no-store"
-        });
+      try {
+        const parsed = JSON.parse(raw);
+        detail = parsed.detail || parsed.message || raw;
+      } catch {
+        // Use the response text if it is not JSON.
+      }
 
-        if (!response.ok) {
-            const errorText = await response.text();
-
-            let errorMessage = errorText;
-
-            try {
-                const parsed = JSON.parse(errorText);
-                errorMessage =
-                    parsed.detail ??
-                    parsed.error ??
-                    parsed.message ??
-                    errorText;
-            } catch {
-                // Keep the original response text.
-            }
-
-            throw new Error(
-                `Streaming API returned HTTP ${response.status}: ${
-                    typeof errorMessage === "string"
-                        ? errorMessage
-                        : prettyJSON(errorMessage)
-                }`
-            );
-        }
-
-        if (!response.body) {
-            throw new Error(
-                "The server returned no response stream. Check the FastAPI endpoint."
-            );
-        }
-
-        const contentType =
-            response.headers.get("content-type") ?? "";
-
-        /*
-         * Some server implementations may return a normal JSON
-         * response instead of SSE. Handle that case gracefully.
-         */
-        if (
-            contentType.includes("application/json") &&
-            !contentType.includes("text/event-stream")
-        ) {
-            const result = await response.json();
-
-            callbacks.onPlan?.(result.plan ?? result);
-            callbacks.onDone?.(result);
-
-            return result;
-        }
-
-        reader = response.body.getReader();
-
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let finalResult = null;
-
-        while (true) {
-            const { value, done } = await reader.read();
-
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-
-            /*
-             * SSE events are separated by a blank line.
-             * Both LF and CRLF formats are supported.
-             */
-            const blocks = buffer.split(/\r?\n\r?\n/);
-            buffer = blocks.pop() ?? "";
-
-            for (const block of blocks) {
-                if (!block.trim() || block.startsWith(":")) {
-                    continue;
-                }
-
-                const parsed = parseSSEBlock(block);
-
-                if (!parsed) continue;
-
-                handleStreamEvent(parsed, {
-                    onText: (text, data) => {
-                        callbacks.onText?.(text, data);
-                    },
-
-                    onProgress: message => {
-                        callbacks.onProgress?.(message);
-                    },
-
-                    onPlan: plan => {
-                        finalResult = plan;
-                        callbacks.onPlan?.(plan);
-                    },
-
-                    onDone: data => {
-                        finalResult = data ?? finalResult;
-                        callbacks.onDone?.(data);
-                    }
-                });
-            }
-        }
-
-        buffer += decoder.decode();
-
-        if (buffer.trim()) {
-            const parsed = parseSSEBlock(buffer);
-
-            if (parsed) {
-                handleStreamEvent(parsed, {
-                    onText: callbacks.onText,
-                    onProgress: callbacks.onProgress,
-
-                    onPlan: plan => {
-                        finalResult = plan;
-                        callbacks.onPlan?.(plan);
-                    },
-
-                    onDone: data => {
-                        finalResult = data ?? finalResult;
-                        callbacks.onDone?.(data);
-                    }
-                });
-            }
-        }
-
-        callbacks.onComplete?.(finalResult);
-
-        return finalResult;
-    } catch (error) {
-        if (timeoutReached) {
-            throw new Error(
-                "Streaming timed out after 10 minutes. Check the FastAPI terminal, Gemini API key, model name, quota, and network connection."
-            );
-        }
-
-        if (error.name === "AbortError") {
-            throw new Error(
-                "The streaming request was cancelled."
-            );
-        }
-
-        throw error;
-    } finally {
-        clearTimeout(timeout);
-
-        if (reader) {
-            try {
-                await reader.cancel();
-            } catch {
-                // The stream may already be closed.
-            }
-        }
-
-        if (activeController === controller) {
-            activeController = null;
-        }
+      throw new Error(
+        `Streaming endpoint returned HTTP ${response.status}: ` +
+        `${typeof detail === "string" ? detail : pretty(detail)}`
+      );
     }
-}
 
-/* -------------------------------------------------------
-   PLAN GENERATION
-------------------------------------------------------- */
+    if (!response.body) {
+      throw new Error("The server returned no response stream.");
+    }
 
-function getTaskDescription() {
-    return getValue(
-        "taskInput",
-        "task",
-        "taskDescription",
-        "taskDescriptionInput",
-        "problemInput",
-        "goalInput"
-    );
-}
+    reader = response.body.getReader();
 
-function getPlanRequestBody() {
-    const task = getTaskDescription();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let completed = false;
 
-    if (!task) {
+    const processBlock = block => {
+      const parsed = parseSSEBlock(block);
+      if (!parsed) return;
+
+      const event = parsed.data;
+
+      if (parsed.eventName === "error" || event.type === "error") {
         throw new Error(
-            "Enter a task or problem description before generating a plan."
+          event.message || "The Gemini streaming request failed."
         );
+      }
+
+      if (event.type === "status") {
+        status(event.message || "Gemini is working…");
+        return;
+      }
+
+      if (event.type === "delta") {
+        status("Gemini is generating your plan…");
+        return;
+      }
+
+      if (event.type === "complete") {
+        if (!event.plan) {
+          throw new Error(
+            "The server reported completion without a plan."
+          );
+        }
+
+        renderPlan(event.plan, event.run_id, event.model);
+        completed = true;
+        status("Plan generated and saved successfully.", "success");
+      }
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() || "";
+
+      for (const block of blocks) {
+        processBlock(block);
+      }
     }
 
-    const body = { task };
+    buffer += decoder.decode();
 
-    const context = getValue(
-        "contextInput",
-        "context",
-        "systemContext"
-    );
-
-    const constraints = getValue(
-        "constraintsInput",
-        "constraintsText"
-    );
-
-    const observations = getValue(
-        "observationsInput",
-        "observations"
-    );
-
-    if (context) body.context = context;
-
-    if (constraints) {
-        body.constraints = constraints;
+    if (buffer.trim()) {
+      processBlock(buffer);
     }
 
-    if (observations) {
-        body.observations = observations;
+    if (!completed) {
+      throw new Error(
+        "The stream ended before a complete plan was received. " +
+        "Check the FastAPI terminal for a Gemini error."
+      );
+    }
+  } catch (error) {
+    if (timedOut) {
+      throw new Error(
+        "Streaming timed out after 10 minutes. Check the FastAPI terminal, " +
+        "Gemini API key, model name, quota, and network connection."
+      );
     }
 
-    return body;
-}
+    if (error.name === "AbortError") {
+      throw new Error("The streaming request was cancelled.");
+    }
 
-function showStreamText(text) {
-    const output = $(
-        "streamOutput",
-        "streamText",
-        "generationProgress",
-        "streamingOutput"
-    );
+    throw error;
+  } finally {
+    clearTimeout(timer);
 
-    if (!output) return;
+    if (reader) {
+      try {
+        await reader.cancel();
+      } catch {
+        // The stream may already be closed.
+      }
+    }
 
-    output.textContent += text;
-    show(output);
+    if (activeController === controller) {
+      activeController = null;
+    }
+  }
 }
 
 async function generatePlan() {
-    if (isGenerating) return;
+  if (busy) return;
 
-    clearError();
-    setLoading(true, "Generating plan...");
+  const task = $("task")?.value.trim() || "";
 
-    const streamOutput = $(
-        "streamOutput",
-        "streamText",
-        "generationProgress",
-        "streamingOutput"
-    );
+  if (task.length < 10) {
+    status("Enter a task description containing at least 10 characters.", "error");
+    return;
+  }
 
-    if (streamOutput) {
-        streamOutput.textContent = "";
-        show(streamOutput);
+  busy = true;
+
+  const button = $("planBtn");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Generating…";
+  }
+
+  try {
+    status("Connecting to Gemini…");
+    await streamPlan({ task });
+    await loadRuns(false);
+  } catch (error) {
+    showError(error);
+  } finally {
+    busy = false;
+
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Generate plan with Gemini";
     }
-
-    try {
-        const body = getPlanRequestBody();
-
-        setStatus(
-            "Connecting to NS-CR streaming endpoint...",
-            "info"
-        );
-
-        let receivedPlan = null;
-
-        const result = await streamPlan(
-            API.streamPlan,
-            body,
-            {
-                onProgress(message) {
-                    setStatus(message, "info");
-                },
-
-                onText(text) {
-                    showStreamText(text);
-                },
-
-                onPlan(plan) {
-                    if (!plan || typeof plan !== "object") {
-                        return;
-                    }
-
-                    receivedPlan = plan.plan ?? plan;
-
-                    if (Array.isArray(receivedPlan.steps)) {
-                        renderPlan(receivedPlan);
-                    }
-
-                    updateCurrentRun(plan);
-                },
-
-                onDone(data) {
-                    if (data && typeof data === "object") {
-                        updateCurrentRun(data);
-
-                        if (data.plan) {
-                            receivedPlan = data.plan;
-                        } else if (Array.isArray(data.steps)) {
-                            receivedPlan = data;
-                        }
-                    }
-                }
-            }
-        );
-
-        if (!receivedPlan && result && typeof result === "object") {
-            receivedPlan = result.plan ?? result;
-        }
-
-        if (
-            receivedPlan &&
-            Array.isArray(receivedPlan.steps)
-        ) {
-            renderPlan(receivedPlan);
-            setStatus("Plan generated successfully.", "success");
-        } else {
-            setStatus(
-                "The stream finished, but no complete plan object was received. Check the stream output and FastAPI response format.",
-                "warning"
-            );
-
-            if (result) {
-                renderResult(
-                    result,
-                    "planOutput",
-                    "planResult",
-                    "generatedPlan"
-                );
-            }
-        }
-
-        await loadRunsSilently();
-    } catch (error) {
-        showError(error);
-    } finally {
-        setLoading(false);
-    }
+  }
 }
 
-/* -------------------------------------------------------
-   TRACE SUBMISSION
-------------------------------------------------------- */
-
-function getTraceRequestBody() {
-    const runId =
-        getValue("traceRunId", "traceRunIdInput") ||
-        currentRunId;
-
-    if (!runId) {
-        throw new Error(
-            "Generate or select a run before submitting trace events."
-        );
-    }
-
-    const rawEvents = getValue(
-        "traceInput",
-        "traceJSON",
-        "eventsInput",
-        "traceEvents"
-    );
-
-    let events = [];
-
-    if (rawEvents) {
-        events = parseJSONInput(rawEvents);
-    } else {
-        const eventId = getValue(
-            "eventIdInput",
-            "eventId"
-        );
-
-        const stepId = getValue(
-            "traceStepId",
-            "stepIdInput"
-        );
-
-        const status = getValue(
-            "traceStatus",
-            "eventStatus"
-        ) || "unknown";
-
-        const source = getValue(
-            "traceSource",
-            "eventSource"
-        ) || "manual";
-
-        const inputObservation = getValue(
-            "inputObservation",
-            "traceInputObservation"
-        );
-
-        const outputObservation = getValue(
-            "outputObservation",
-            "traceOutputObservation"
-        );
-
-        if (!eventId) {
-            throw new Error(
-                "Enter an event ID or provide trace events as JSON."
-            );
-        }
-
-        const event = {
-            event_id: eventId,
-            status,
-            source
-        };
-
-        if (stepId) event.step_id = stepId;
-
-        if (inputObservation) {
-            event.input_observation = inputObservation;
-        }
-
-        if (outputObservation) {
-            event.output_observation = outputObservation;
-        }
-
-        events = [event];
-    }
-
-    return {
-        run_id: runId,
-        events
-    };
+function showError(error) {
+  status(error?.message || String(error), "error");
 }
 
 async function submitTrace() {
-    clearError();
+  if (!currentRunId) {
+    status("Generate or load a saved run before submitting trace events.", "error");
+    return;
+  }
 
-    try {
-        const body = getTraceRequestBody();
+  let events;
 
-        const result = await postJSON(API.trace, body);
+  try {
+    events = JSON.parse($("traceJson").value);
+  } catch {
+    status("Trace events must be a valid JSON array.", "error");
+    return;
+  }
 
-        currentTrace = body.events;
+  if (!Array.isArray(events) || events.length === 0) {
+    status("Enter a non-empty array of actual trace events.", "error");
+    return;
+  }
 
-        renderResult(
-            result,
-            "traceOutput",
-            "traceResult",
-            "traceResponse"
-        );
+  try {
+    const result = await postJSON(API.trace, {
+      run_id: currentRunId,
+      events
+    });
 
-        setStatus("Trace submitted successfully.", "success");
-    } catch (error) {
-        showError(error);
-    }
+    updateRun(result.run_id);
+    renderJSON("verificationView", result.verification);
+
+    status(
+      `Saved ${result.trace_event_count} trace event(s).`,
+      "success"
+    );
+
+    await loadRuns(false);
+  } catch (error) {
+    showError(error);
+  }
 }
-
-/* -------------------------------------------------------
-   VERIFICATION
-------------------------------------------------------- */
 
 async function verifyRun() {
-    clearError();
+  if (!currentRunId) {
+    status("Generate or load a saved run first.", "error");
+    return;
+  }
 
-    try {
-        const runId =
-            getValue("verifyRunId", "verificationRunId") ||
-            currentRunId;
+  try {
+    const result = await postJSON(API.verify, {
+      run_id: currentRunId,
+      issue: $("issue")?.value.trim() || ""
+    });
 
-        if (!runId) {
-            throw new Error(
-                "Enter a run ID or generate a plan first."
-            );
-        }
+    updateRun(result.run_id);
+    renderJSON("verificationView", result.verification);
 
-        const result = await postJSON(API.verify, {
-            run_id: runId
-        });
-
-        renderResult(
-            result,
-            "verifyOutput",
-            "verificationOutput",
-            "verificationResult"
-        );
-
-        setStatus("Verification completed.", "success");
-    } catch (error) {
-        showError(error);
-    }
+    status("Verification completed.", "success");
+    await loadRuns(false);
+  } catch (error) {
+    showError(error);
+  }
 }
 
-/* -------------------------------------------------------
-   DIAGNOSIS
-------------------------------------------------------- */
+async function diagnose() {
+  if (!currentRunId) {
+    status("Generate or load a saved plan first.", "error");
+    return;
+  }
 
-async function diagnoseRun() {
-    clearError();
+  try {
+    const result = await postJSON(API.diagnose, {
+      run_id: currentRunId,
+      issue: $("issue")?.value.trim() || ""
+    });
 
-    try {
-        const runId =
-            getValue("diagnoseRunId", "diagnosisRunId") ||
-            currentRunId;
+    updateRun(result.run_id);
+    renderJSON("diagnosisView", result.diagnosis);
 
-        if (!runId) {
-            throw new Error(
-                "Enter a run ID or generate a plan first."
-            );
-        }
-
-        const body = { run_id: runId };
-
-        const question = getValue(
-            "diagnosisQuestion",
-            "diagnoseQuestion",
-            "diagnosisInput"
-        );
-
-        const context = getValue(
-            "diagnosisContext",
-            "diagnoseContext"
-        );
-
-        if (question) body.question = question;
-        if (context) body.context = context;
-
-        const result = await postJSON(API.diagnose, body);
-
-        renderResult(
-            result,
-            "diagnosisOutput",
-            "diagnoseOutput",
-            "diagnosisResult"
-        );
-
-        setStatus("Diagnosis completed.", "success");
-    } catch (error) {
-        showError(error);
+    if (result.verification) {
+      renderJSON("verificationView", result.verification);
     }
+
+    showElement("repairArea", true);
+
+    status(
+      result.diagnosis?.causal_status === "undetermined"
+        ? "Diagnosis is undetermined. Review the available evidence."
+        : "Diagnosis hypothesis generated. It is not proof of causality.",
+      "success"
+    );
+
+    await loadRuns(false);
+  } catch (error) {
+    showError(error);
+  }
 }
 
-/* -------------------------------------------------------
-   COUNTERFACTUAL ANALYSIS
-------------------------------------------------------- */
+async function repair() {
+  if (!currentRunId) {
+    status("Generate or load a diagnosed run before requesting repair.", "error");
+    return;
+  }
 
-function getCounterfactualBody() {
-    const runId =
-        getValue("counterfactualRunId", "cfRunId") ||
-        currentRunId;
+  try {
+    const result = await postJSON(API.repair, {
+      run_id: currentRunId
+    });
 
-    if (!runId) {
-        throw new Error(
-            "Enter a run ID or generate a plan first."
-        );
-    }
+    updateRun(result.run_id);
+    renderJSON("repairView", result.repair);
 
-    const candidateStepId = getValue(
-        "candidateStepId",
-        "counterfactualStepId",
-        "cfStepId"
+    status(
+      "Repair proposal generated. It has not been executed.",
+      "success"
     );
 
-    const interventionDescription = getValue(
-        "interventionDescription",
-        "interventionInput"
-    );
-
-    const baselineOutcome = getValue(
-        "baselineOutcome",
-        "baselineInput"
-    );
-
-    const interventionOutcome = getValue(
-        "interventionOutcome",
-        "interventionOutcomeInput"
-    );
-
-    const evidenceSource = getValue(
-        "evidenceSource",
-        "counterfactualEvidenceSource"
-    ) || "user-provided";
-
-    if (!candidateStepId) {
-        throw new Error("Enter the candidate step ID.");
-    }
-
-    if (!interventionDescription) {
-        throw new Error("Describe the intervention.");
-    }
-
-    if (!baselineOutcome || !interventionOutcome) {
-        throw new Error(
-            "Enter both the baseline outcome and intervention outcome."
-        );
-    }
-
-    const conditionsText = getValue(
-        "conditionsHeldConstant",
-        "heldConstantInput"
-    );
-
-    const conditionsHeldConstant = conditionsText
-        ? conditionsText
-            .split(/\r?\n|,/)
-            .map(value => value.trim())
-            .filter(Boolean)
-        : [];
-
-    const executedElement = $(
-        "interventionWasExecuted",
-        "interventionExecuted"
-    );
-
-    return {
-        run_id: runId,
-        candidate_step_id: candidateStepId,
-        intervention_description: interventionDescription,
-        baseline_outcome: baselineOutcome,
-        intervention_outcome: interventionOutcome,
-        conditions_held_constant: conditionsHeldConstant,
-        evidence_source: evidenceSource,
-        intervention_was_executed:
-            executedElement?.checked ?? false
-    };
+    await loadRuns(false);
+  } catch (error) {
+    showError(error);
+  }
 }
 
-async function runCounterfactual() {
-    clearError();
+async function loadRuns(showMessage = true) {
+  try {
+    const result = await request(API.runs, { timeout: 20000 });
+    const runs = Array.isArray(result?.runs) ? result.runs : [];
+    const target = $("runs");
 
-    try {
-        const body = getCounterfactualBody();
+    if (!target) return;
 
-        const result = await postJSON(
-            API.counterfactual,
-            body
-        );
+    target.replaceChildren();
 
-        renderResult(
-            result,
-            "counterfactualOutput",
-            "counterfactualResult",
-            "cfOutput"
-        );
+    if (runs.length === 0) {
+      target.textContent = "No saved runs yet.";
+    } else {
+      runs.forEach(run => {
+        const row = document.createElement("div");
+        row.className = "runrow";
 
-        setStatus(
-            "Counterfactual analysis completed.",
-            "success"
-        );
-    } catch (error) {
-        showError(error);
+        const title = document.createElement("strong");
+        title.textContent = run.task || "Untitled task";
+
+        const created = document.createElement("span");
+        created.textContent = run.created_at || "";
+
+        const trace = document.createElement("span");
+        trace.textContent = run.has_trace ? "Trace saved" : "No trace";
+
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = "Open";
+        button.addEventListener("click", () => loadRun(run.id));
+
+        row.append(title, created, trace, button);
+        target.appendChild(row);
+      });
     }
-}
 
-/* -------------------------------------------------------
-   REPAIR
-------------------------------------------------------- */
-
-async function repairRun() {
-    clearError();
-
-    try {
-        const runId =
-            getValue("repairRunId", "repairRunIdInput") ||
-            currentRunId;
-
-        if (!runId) {
-            throw new Error(
-                "Enter a run ID or generate a plan first."
-            );
-        }
-
-        const body = { run_id: runId };
-
-        const diagnosis = getValue(
-            "repairDiagnosis",
-            "repairDiagnosisInput",
-            "rootCauseInput"
-        );
-
-        const instructions = getValue(
-            "repairInstructions",
-            "repairInstructionInput"
-        );
-
-        const revisedStepsText = getValue(
-            "revisedStepsInput",
-            "repairSteps"
-        );
-
-        if (diagnosis) {
-            body.diagnosis = diagnosis;
-        }
-
-        if (instructions) {
-            body.instructions = instructions;
-        }
-
-        if (revisedStepsText) {
-            body.revised_steps = parseJSONInput(
-                revisedStepsText,
-                []
-            );
-        }
-
-        const result = await postJSON(API.repair, body);
-
-        renderResult(
-            result,
-            "repairOutput",
-            "repairResult",
-            "repairResponse"
-        );
-
-        setStatus(
-            "Repair analysis completed. Review the proposed changes before applying them.",
-            "success"
-        );
-
-        await loadRunsSilently();
-    } catch (error) {
-        showError(error);
-    }
-}
-
-/* -------------------------------------------------------
-   SAVED RUNS
-------------------------------------------------------- */
-
-async function loadRuns() {
-    clearError();
-
-    try {
-        const result = await request(API.runs);
-
-        renderRuns(result);
-
-        setStatus("Saved runs loaded.", "success");
-
-        return result;
-    } catch (error) {
-        showError(error);
-        return null;
-    }
-}
-
-async function loadRunsSilently() {
-    try {
-        const result = await request(API.runs);
-        renderRuns(result);
-        return result;
-    } catch (error) {
-        console.warn("Could not refresh saved runs:", error.message);
-        return null;
-    }
+    if (showMessage) status("Saved runs refreshed.", "success");
+  } catch (error) {
+    const target = $("runs");
+    if (target) target.textContent = "Could not load saved runs.";
+    if (showMessage) showError(error);
+  }
 }
 
 async function loadRun(runId) {
-    clearError();
+  try {
+    const run = await request(
+      `${API.runs}/${encodeURIComponent(runId)}`
+    );
 
-    if (!runId) {
-        showError(new Error("No run ID was provided."));
-        return;
+    updateRun(run.id);
+    currentPlan = run.plan || null;
+
+    if (run.plan) {
+      renderPlan(run.plan, run.id, run.model);
     }
 
-    try {
-        const result = await request(
-            `${API.runs}/${encodeURIComponent(runId)}`
-        );
+    if ($("task")) $("task").value = run.task || "";
+    if ($("issue")) $("issue").value = run.issue || "";
 
-        currentRunId = String(runId);
-        updateCurrentRun(result);
-
-        renderResult(
-            result,
-            "runDetailOutput",
-            "runDetails",
-            "selectedRunOutput"
-        );
-
-        const plan = result.plan ?? result;
-
-        if (Array.isArray(plan.steps)) {
-            renderPlan(plan);
-        }
-
-        const trace = result.trace ?? result.events;
-
-        if (Array.isArray(trace)) {
-            currentTrace = trace;
-
-            const traceInput = $(
-                "traceInput",
-                "traceJSON",
-                "eventsInput",
-                "traceEvents"
-            );
-
-            if (traceInput) {
-                traceInput.value = prettyJSON(trace);
-            }
-        }
-
-        setStatus(`Loaded run ${runId}.`, "success");
-    } catch (error) {
-        showError(error);
+    if ($("traceJson")) {
+      $("traceJson").value =
+        Array.isArray(run.trace) && run.trace.length
+          ? pretty(run.trace)
+          : "";
     }
-}
 
-/* -------------------------------------------------------
-   HEALTH CHECK
-------------------------------------------------------- */
-
-async function checkHealth() {
-    try {
-        const result = await request(API.health, {
-            timeout: 15000
-        });
-
-        renderResult(
-            result,
-            "healthOutput",
-            "healthStatus",
-            "apiHealth"
-        );
-
-        setStatus("FastAPI server is reachable.", "success");
-
-        return result;
-    } catch (error) {
-        setStatus(
-            `FastAPI health check failed: ${error.message}`,
-            "error"
-        );
-
-        return null;
+    if (run.verification) {
+      renderJSON("verificationView", run.verification);
     }
+
+    if (run.diagnosis) {
+      renderJSON("diagnosisView", run.diagnosis);
+      showElement("repairArea", true);
+    } else {
+      showElement("repairArea", false);
+    }
+
+    if (run.repair) {
+      renderJSON("repairView", run.repair);
+    }
+
+    showElement("planPanel", true);
+    status(`Loaded saved run ${run.id}.`, "success");
+  } catch (error) {
+    showError(error);
+  }
 }
 
-/* -------------------------------------------------------
-   EVENT BINDING
-------------------------------------------------------- */
+async function healthCheck() {
+  try {
+    const data = await request(API.health, { timeout: 15000 });
+    const service = $("service");
 
-function bindClick(ids, callback) {
-    const element = $(...ids);
+    if (service) {
+      service.textContent = data.gemini_key_configured
+        ? `API ready · ${data.model}`
+        : "Server online · Gemini key missing";
+    }
 
-    if (!element) return;
+    if (!data.gemini_key_configured) {
+      status(
+        "FastAPI is running, but GEMINI_API_KEY is missing or is still the placeholder.",
+        "error"
+      );
+    }
+  } catch (error) {
+    const service = $("service");
+    if (service) service.textContent = "API offline";
 
-    element.addEventListener("click", event => {
-        event.preventDefault();
-
-        Promise.resolve(callback()).catch(showError);
-    });
-}
-
-function bindForm(ids, callback) {
-    const form = $(...ids);
-
-    if (!form) return;
-
-    form.addEventListener("submit", event => {
-        event.preventDefault();
-
-        Promise.resolve(callback()).catch(showError);
-    });
+    status(`Cannot reach FastAPI: ${error.message}`, "error");
+  }
 }
 
 function bindEvents() {
-    bindClick(
-        [
-            "generateBtn",
-            "generatePlanBtn",
-            "planBtn",
-            "submitPlan",
-            "runBtn"
-        ],
-        generatePlan
-    );
-
-    bindForm(
-        ["planForm", "generatePlanForm", "taskForm"],
-        generatePlan
-    );
-
-    bindClick(
-        ["submitTraceBtn", "traceBtn", "sendTraceBtn"],
-        submitTrace
-    );
-
-    bindForm(
-        ["traceForm", "submitTraceForm"],
-        submitTrace
-    );
-
-    bindClick(
-        ["verifyBtn", "verifyRunBtn", "verificationBtn"],
-        verifyRun
-    );
-
-    bindForm(
-        ["verifyForm", "verificationForm"],
-        verifyRun
-    );
-
-    bindClick(
-        ["diagnoseBtn", "diagnoseRunBtn", "diagnosisBtn"],
-        diagnoseRun
-    );
-
-    bindForm(
-        ["diagnoseForm", "diagnosisForm"],
-        diagnoseRun
-    );
-
-    bindClick(
-        [
-            "counterfactualBtn",
-            "runCounterfactualBtn",
-            "cfBtn"
-        ],
-        runCounterfactual
-    );
-
-    bindForm(
-        ["counterfactualForm", "cfForm"],
-        runCounterfactual
-    );
-
-    bindClick(
-        ["repairBtn", "repairRunBtn", "runRepairBtn"],
-        repairRun
-    );
-
-    bindForm(
-        ["repairForm", "repairRunForm"],
-        repairRun
-    );
-
-    bindClick(
-        ["refreshRunsBtn", "loadRunsBtn", "runsBtn"],
-        loadRuns
-    );
-
-    bindClick(
-        ["healthBtn", "checkHealthBtn"],
-        checkHealth
-    );
-
-    document.addEventListener("click", event => {
-        const button = event.target.closest("[data-load-run]");
-
-        if (!button) return;
-
-        const runId = button.getAttribute("data-load-run");
-
-        if (runId) {
-            loadRun(runId);
-        }
-    });
-
-    /*
-     * Stop an ongoing stream when the user clicks a cancel button.
-     */
-    bindClick(
-        ["cancelGenerationBtn", "cancelStreamBtn"],
-        () => {
-            if (activeController) {
-                activeController.abort();
-                setStatus("Generation cancelled.", "warning");
-            }
-        }
-    );
-
-    /*
-     * Optional: copy raw plan JSON to the clipboard.
-     */
-    bindClick(
-        ["copyPlanBtn", "copyPlanJSONBtn"],
-        async () => {
-            if (!currentPlan) {
-                throw new Error("There is no generated plan to copy.");
-            }
-
-            await navigator.clipboard.writeText(
-                prettyJSON(currentPlan)
-            );
-
-            setStatus("Plan JSON copied to clipboard.", "success");
-        }
-    );
+  $("planBtn")?.addEventListener("click", generatePlan);
+  $("traceBtn")?.addEventListener("click", submitTrace);
+  $("diagnoseBtn")?.addEventListener("click", diagnose);
+  $("repairBtn")?.addEventListener("click", repair);
+  $("refreshBtn")?.addEventListener("click", () => loadRuns(true));
 }
 
-/* -------------------------------------------------------
-   APPLICATION STARTUP
-------------------------------------------------------- */
+async function initialize() {
+  bindEvents();
 
-async function initializeApp() {
-    bindEvents();
-
-    console.info("NS-CR frontend initialized.");
-    console.info("Request timeout:", REQUEST_TIMEOUT_MS, "ms");
-    console.info("Streaming timeout:", STREAM_TIMEOUT_MS, "ms");
-
-    /*
-     * Populate the run list and health indicator without
-     * blocking the page from loading.
-     */
-    await Promise.allSettled([
-        checkHealth(),
-        loadRunsSilently()
-    ]);
+  await Promise.allSettled([
+    healthCheck(),
+    loadRuns(false)
+  ]);
 }
 
 if (document.readyState === "loading") {
-    document.addEventListener(
-        "DOMContentLoaded",
-        initializeApp,
-        { once: true }
-    );
+  document.addEventListener("DOMContentLoaded", initialize, { once: true });
 } else {
-    initializeApp();
+  initialize();
 }
 
-/* -------------------------------------------------------
-   OPTIONAL GLOBAL ACCESS FOR DEBUGGING
-------------------------------------------------------- */
-
 window.NSCR = {
-    request,
-    streamPlan,
-    generatePlan,
-    submitTrace,
-    verifyRun,
-    diagnoseRun,
-    runCounterfactual,
-    repairRun,
-    loadRuns,
-    loadRun,
-    checkHealth,
-
-    getState() {
-        return {
-            currentRunId,
-            currentPlan,
-            currentTrace,
-            isGenerating
-        };
-    }
+  generatePlan,
+  submitTrace,
+  verifyRun,
+  diagnose,
+  repair,
+  loadRuns,
+  loadRun,
+  healthCheck
 };

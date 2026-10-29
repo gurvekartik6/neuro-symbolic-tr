@@ -1,1 +1,679 @@
-:root{--bg:#f5f7fb;--ink:#1b2433;--muted:#69778b;--line:#e0e6ef;--blue:#3157a4;--bluebg:#eef3ff;--red:#a52a2a;--green:#18764c}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}header{background:#121d32;color:#fff;padding:23px max(20px,calc((100vw - 960px)/2));display:flex;align-items:center;gap:15px}.brand{background:#e3eaff;color:#27437d;width:46px;height:46px;border-radius:12px;display:grid;place-items:center;font-weight:800}.kicker{font-size:10px;letter-spacing:1.3px;color:#a9bce1;font-weight:800;margin:0}h1{font-size:22px;margin:2px 0}.sub{margin:0;color:#c3cde0}.status{margin-left:auto;font-size:11px;color:#c3cde0}main{max-width:960px;margin:25px auto;padding:0 18px}.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px;box-shadow:0 5px 18px #16274408}.step-title{display:flex;gap:12px;align-items:flex-start;margin-bottom:14px}.step-title>span{background:var(--bluebg);color:var(--blue);border-radius:8px;padding:5px 9px;font-size:11px;font-weight:800}.step-title h2{margin:0;font-size:16px}.step-title p{margin:3px 0 0;color:var(--muted);font-size:12px}textarea{width:100%;border:1px solid #cfd8e6;border-radius:10px;padding:12px;font:inherit;resize:vertical;margin:4px 0 12px}textarea:focus{outline:2px solid #b9caff;border-color:var(--blue)}button{font:inherit;font-weight:700;border:0;border-radius:9px;padding:10px 15px;cursor:pointer}.primary{background:var(--blue);color:white}.secondary{background:white;border:1px solid #cfd8e6;color:var(--ink);margin-left:auto}.step-title button{margin-left:auto}.hidden{display:none!important}.alert{padding:12px;border-radius:9px;margin-bottom:15px;background:#fff0ee;color:var(--red);font-size:12px}.divider{height:1px;background:var(--line);margin:20px 0}.step{border:1px solid var(--line);border-radius:10px;padding:12px;margin:9px 0}.stephead{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.sid{font-size:10px;font-weight:800;color:var(--blue);background:var(--bluebg);padding:3px 6px;border-radius:5px}.step h3{font-size:13px;margin:0}.step p{font-size:12px;color:#536175;margin:7px 0}.meta{display:flex;gap:6px;flex-wrap:wrap;font-size:10px;color:var(--muted)}.tag{padding:2px 6px;border:1px solid var(--line);border-radius:5px}.constraint{padding:10px 12px;background:#f8faff;border-radius:8px;margin:7px 0;font-size:12px}.constraint strong{display:block}.result{border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:15px}.result h3{font-size:14px;margin:0 0 7px}.result p,.result li{font-size:12px}.result ul{padding-left:18px}.confidence{font-weight:800;color:var(--blue)}.notice{font-size:11px;color:var(--muted);background:#f6f8fc;padding:10px;border-radius:8px;margin-top:12px}.runs{font-size:12px}.runrow{display:flex;gap:10px;align-items:center;border-top:1px solid var(--line);padding:10px 0}.runrow span{color:var(--muted);font-size:10px}.runrow strong{flex:1}.runrow button{font-size:11px;padding:6px 9px;background:#f1f4fa}footer{text-align:center;color:#8490a2;font-size:10px;padding:15px 0 30px}@media(max-width:600px){header{align-items:flex-start;flex-wrap:wrap}header .status{width:100%;margin-left:61px}h1{font-size:19px}.panel{padding:15px}.runrow{align-items:flex-start;flex-wrap:wrap}.runrow strong{flex-basis:70%}}
+
+/* =========================================================
+   NS-CR Research Lab — Responsive UI Styles
+   Fixes long JSON, diagnosis output and horizontal overflow
+   ========================================================= */
+
+/* ---------- Theme ---------- */
+
+:root {
+    color-scheme: light;
+
+    --page-bg: #f3f6fb;
+    --panel-bg: #ffffff;
+    --text: #172033;
+    --muted: #68758b;
+    --border: #dce3ed;
+    --primary: #3157ad;
+    --primary-hover: #25468f;
+    --secondary-bg: #f4f7fc;
+    --secondary-hover: #e8eef9;
+    --success: #137547;
+    --danger: #b42318;
+    --radius: 12px;
+    --shadow: 0 2px 8px rgba(28, 46, 80, 0.045);
+}
+
+/* ---------- Reset ---------- */
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    min-height: 100%;
+    width: 100%;
+    overflow-x: clip;
+    scroll-behavior: smooth;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    width: 100%;
+    overflow-x: clip;
+    background: var(--page-bg);
+    color: var(--text);
+    font-family:
+        Inter, -apple-system, BlinkMacSystemFont, "Segoe UI",
+        Roboto, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+textarea,
+select {
+    font: inherit;
+}
+
+button {
+    max-width: 100%;
+    cursor: pointer;
+}
+
+button:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+img,
+svg,
+video,
+canvas {
+    max-width: 100%;
+}
+
+/* ---------- Page header ---------- */
+
+header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    width: 100%;
+    padding: 24px max(20px, calc((100% - 1100px) / 2));
+    background: var(--panel-bg);
+    border-bottom: 1px solid var(--border);
+}
+
+.brand {
+    display: grid;
+    flex: 0 0 46px;
+    width: 46px;
+    height: 46px;
+    place-items: center;
+    border-radius: 12px;
+    background: var(--primary);
+    color: #ffffff;
+    font-size: 21px;
+    font-weight: 800;
+}
+
+header > div:nth-child(2) {
+    min-width: 0;
+}
+
+header h1 {
+    margin: 0;
+    font-size: clamp(21px, 3vw, 28px);
+    font-weight: 750;
+    line-height: 1.25;
+    letter-spacing: -0.6px;
+    overflow-wrap: anywhere;
+}
+
+.kicker {
+    margin: 0 0 4px;
+    color: var(--primary);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 1.2px;
+    overflow-wrap: anywhere;
+}
+
+.sub {
+    margin: 5px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.status {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: var(--secondary-bg);
+    color: var(--muted);
+    font-size: 11px;
+    overflow-wrap: anywhere;
+}
+
+/* ---------- Main layout ---------- */
+
+main {
+    width: min(100% - 32px, 1100px);
+    min-width: 0;
+    margin: 26px auto;
+}
+
+.panel {
+    min-width: 0;
+    margin-bottom: 18px;
+    padding: 22px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel-bg);
+    box-shadow: var(--shadow);
+}
+
+.hidden {
+    display: none !important;
+}
+
+/* Prevent flex/grid children from forcing their parent wider. */
+
+.panel *,
+.step-title > div,
+#planView,
+#verificationView,
+#diagnosisView,
+#repairView,
+#runs {
+    min-width: 0;
+    max-width: 100%;
+}
+
+/* ---------- Step headings ---------- */
+
+.step-title {
+    display: flex;
+    align-items: flex-start;
+    gap: 13px;
+    margin-bottom: 18px;
+}
+
+.step-title > span:first-child {
+    display: grid;
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    place-items: center;
+    border-radius: 9px;
+    background: #edf2ff;
+    color: var(--primary);
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.step-title h2 {
+    margin: 0 0 4px;
+    font-size: 17px;
+    font-weight: 750;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.step-title p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+    word-break: normal;
+}
+
+.step-title > button {
+    flex: 0 0 auto;
+    margin-left: auto;
+}
+
+/* ---------- Form controls ---------- */
+
+textarea,
+input,
+select {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    margin: 0 0 14px;
+    padding: 12px 13px;
+    border: 1px solid #cbd5e3;
+    border-radius: 8px;
+    outline: none;
+    background: #ffffff;
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.65;
+    transition:
+        border-color 0.15s ease,
+        box-shadow 0.15s ease;
+}
+
+textarea {
+    min-height: 95px;
+    resize: vertical;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    overflow-x: hidden;
+    tab-size: 2;
+}
+
+#traceJson {
+    min-height: 260px;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: 12px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    overflow-x: auto;
+}
+
+textarea:focus,
+input:focus,
+select:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(49, 87, 173, 0.11);
+}
+
+textarea::placeholder,
+input::placeholder {
+    color: #8994a7;
+}
+
+/* ---------- Buttons ---------- */
+
+button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-height: 36px;
+    padding: 9px 14px;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.4;
+    text-align: center;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    transition:
+        background 0.15s ease,
+        border-color 0.15s ease,
+        transform 0.15s ease;
+}
+
+button:active:not(:disabled) {
+    transform: translateY(1px);
+}
+
+.primary {
+    background: var(--primary);
+    color: #ffffff;
+}
+
+.primary:hover:not(:disabled) {
+    background: var(--primary-hover);
+}
+
+.secondary {
+    border-color: #ccd7e8;
+    background: var(--secondary-bg);
+    color: #263d68;
+}
+
+.secondary:hover:not(:disabled) {
+    border-color: #aebfda;
+    background: var(--secondary-hover);
+}
+
+#planBtn,
+#traceBtn,
+#diagnoseBtn,
+#repairBtn {
+    margin-top: 2px;
+}
+
+/* ---------- Alerts ---------- */
+
+.alert {
+    margin-bottom: 16px;
+    padding: 12px 15px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #ffffff;
+    overflow-wrap: anywhere;
+    word-break: normal;
+}
+
+.alert.error,
+.alert[data-type="error"] {
+    border-color: #f0c4c0;
+    background: #fff4f2;
+    color: var(--danger);
+}
+
+.alert.success,
+.alert[data-type="success"] {
+    border-color: #b9e3cb;
+    background: #f0fbf4;
+    color: var(--success);
+}
+
+/* ---------- Plan and generated content ---------- */
+
+#planView,
+#verificationView,
+#diagnosisView,
+#repairView {
+    width: 100%;
+    overflow-wrap: anywhere;
+    word-break: normal;
+}
+
+#planView h1,
+#planView h2,
+#planView h3,
+#planView h4,
+#verificationView h1,
+#verificationView h2,
+#verificationView h3,
+#diagnosisView h1,
+#diagnosisView h2,
+#diagnosisView h3,
+#repairView h1,
+#repairView h2,
+#repairView h3 {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    line-height: 1.45;
+}
+
+#planView p,
+#planView li,
+#verificationView p,
+#verificationView li,
+#diagnosisView p,
+#diagnosisView li,
+#repairView p,
+#repairView li {
+    overflow-wrap: anywhere;
+    word-break: normal;
+}
+
+#planView ul,
+#planView ol,
+#verificationView ul,
+#verificationView ol,
+#diagnosisView ul,
+#diagnosisView ol,
+#repairView ul,
+#repairView ol {
+    padding-left: 22px;
+}
+
+/* ---------- JSON, code and diagnosis output ---------- */
+
+/*
+ * Main fix for the overflowing diagnosis JSON visible in the screenshot.
+ * Long strings and unbroken tokens must wrap inside their container.
+ */
+
+pre,
+code,
+pre code,
+#verificationView pre,
+#diagnosisView pre,
+#repairView pre,
+#planView pre {
+    max-width: 100%;
+    min-width: 0;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    white-space: pre-wrap;
+    tab-size: 2;
+}
+
+pre {
+    display: block;
+    width: 100%;
+    margin: 10px 0;
+    padding: 14px;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #f8faff;
+    color: #243047;
+}
+
+pre code {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+}
+
+#verificationView > *,
+#diagnosisView > *,
+#repairView > * {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+/* ---------- Trace generator ---------- */
+
+.trace-template-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 10px;
+}
+
+#traceTemplateMessage {
+    margin: 8px 0 12px;
+    color: var(--muted);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+#traceTemplateMessage[data-type="success"] {
+    color: var(--success);
+}
+
+#traceTemplateMessage[data-type="error"] {
+    color: var(--danger);
+}
+
+.trace-help {
+    margin: -5px 0 14px;
+    color: var(--muted);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+/* ---------- Section separators ---------- */
+
+.divider {
+    height: 1px;
+    margin: 25px 0;
+    background: var(--border);
+}
+
+/* ---------- Saved runs ---------- */
+
+.runs {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.runs > *,
+.run-item,
+.run-card {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.runs button {
+    flex-shrink: 0;
+}
+
+.runs a {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+/* ---------- Footer ---------- */
+
+footer {
+    padding: 18px 8px 28px;
+    color: var(--muted);
+    font-size: 11px;
+    text-align: center;
+    overflow-wrap: anywhere;
+}
+
+/* ---------- Keyboard accessibility ---------- */
+
+button:focus-visible {
+    outline: 3px solid rgba(49, 87, 173, 0.35);
+    outline-offset: 3px;
+}
+
+/* ---------- Tablet ---------- */
+
+@media (max-width: 760px) {
+    header {
+        flex-wrap: wrap;
+        padding: 18px 20px;
+    }
+
+    .status {
+        margin-left: 0;
+    }
+
+    main {
+        width: calc(100% - 24px);
+        margin: 16px auto;
+    }
+
+    .panel {
+        padding: 17px;
+    }
+
+    .step-title h2 {
+        font-size: 16px;
+    }
+
+    pre {
+        padding: 11px;
+    }
+}
+
+/* ---------- Mobile ---------- */
+
+@media (max-width: 480px) {
+    body {
+        font-size: 13px;
+    }
+
+    header {
+        gap: 10px;
+        padding: 15px 12px;
+    }
+
+    .brand {
+        flex-basis: 38px;
+        width: 38px;
+        height: 38px;
+        font-size: 18px;
+    }
+
+    header h1 {
+        font-size: 20px;
+    }
+
+    .kicker {
+        font-size: 9px;
+        letter-spacing: 0.7px;
+    }
+
+    main {
+        width: calc(100% - 16px);
+        margin: 10px auto;
+    }
+
+    .panel {
+        margin-bottom: 12px;
+        padding: 13px;
+        border-radius: 9px;
+    }
+
+    .step-title {
+        gap: 9px;
+        margin-bottom: 14px;
+    }
+
+    .step-title > span:first-child {
+        flex-basis: 27px;
+        width: 27px;
+        height: 27px;
+        font-size: 10px;
+    }
+
+    .step-title h2 {
+        font-size: 15px;
+    }
+
+    .step-title p {
+        font-size: 11px;
+    }
+
+    .step-title > button {
+        padding: 7px 9px;
+        font-size: 10px;
+    }
+
+    textarea,
+    input,
+    select {
+        padding: 10px;
+        font-size: 12px;
+    }
+
+    #traceJson,
+    pre,
+    code {
+        font-size: 11px;
+    }
+
+    .trace-template-actions {
+        align-items: stretch;
+    }
+
+    .trace-template-actions button {
+        flex: 1 1 auto;
+    }
+
+    button {
+        padding: 9px 11px;
+    }
+
+    .divider {
+        margin: 19px 0;
+    }
+}
+
+/* ---------- Reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+    }
+}
