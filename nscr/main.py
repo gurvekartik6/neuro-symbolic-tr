@@ -1,5 +1,5 @@
 
-"""NS-CR FastAPI application with evidence-first automatic causal analysis."""
+"""NS-CR FastAPI application with automatic API execution and evidence capture."""
 from __future__ import annotations
 
 import json
@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .gemini_service import GeminiService
+from .execution import execute_plan, list_tools
 from .schemas import (
     TraceSubmission,
     CounterfactualRequest,
@@ -32,14 +33,16 @@ from .verification import (
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
+
 app = FastAPI(
     title="NS-CR Research Lab",
-    version="1.5.0",
+    version="1.6.0",
     description=(
-        "Evidence-backed planning, diagnosis hypotheses, repair proposals, "
-        "retest assessment, and automatic causal analysis."
+        "Evidence-backed planning, automatic HTTP API execution, "
+        "trace collection, diagnosis, repair, retest, and causal analysis."
     ),
 )
+
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
 
@@ -51,6 +54,21 @@ class CausalAnalysisRequest(BaseModel):
     run_id: str = Field(min_length=1, max_length=100)
 
 
+class ExecutionBinding(BaseModel):
+    step_id: str = Field(min_length=1, max_length=40)
+    tool_name: str = Field(min_length=1, max_length=64)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecuteRequest(BaseModel):
+    run_id: str = Field(min_length=1, max_length=100)
+    bindings: list[ExecutionBinding] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+    confirm_external_actions: bool = False
+
+
 def service():
     try:
         return GeminiService()
@@ -60,8 +78,10 @@ def service():
 
 def _ensure_run(run_id: str) -> dict:
     run = get_run(run_id)
+
     if not run:
         raise HTTPException(status_code=404, detail="Run not found.")
+
     return run
 
 
@@ -82,7 +102,10 @@ def _step_ids(plan: dict) -> set[str]:
     }
 
 
-def _unknown_step_ids(events: list[dict], valid_ids: set[str]) -> list[str]:
+def _unknown_step_ids(
+    events: list[dict],
+    valid_ids: set[str],
+) -> list[str]:
     return sorted({
         event["step_id"]
         for event in events
@@ -95,14 +118,14 @@ def _sse(data: dict) -> str:
 
 
 def _is_actual_trace_event(event: dict) -> bool:
-    """Reject placeholders and events without recorded observations."""
+    """Exclude empty placeholders from evidence-based diagnosis."""
     if event.get("source") == "generated_template_pending_observation":
         return False
 
     if event.get("status", "unknown") == "unknown":
         return False
 
-    has_observation = any(
+    return any(
         event.get(field) is not None and event.get(field) != ""
         for field in (
             "input_observation",
@@ -111,25 +134,25 @@ def _is_actual_trace_event(event: dict) -> bool:
             "postconditions_met",
         )
     )
-    return has_observation
 
 
 def _find_saved_intervention(
     workflow_runs: Sequence[Mapping[str, Any] | None],
 ):
-    """Find the latest saved intervention assessment, if any."""
+    """Find the latest saved intervention assessment."""
     for workflow_run in reversed(workflow_runs):
         if workflow_run is None:
             continue
+
         verification = workflow_run.get("verification") or {}
         saved = verification.get("intervention_assessment")
 
         if saved:
             return saved
 
-        # Support analysis runs that retain the assessment in their report.
         analysis = verification.get("causal_analysis") or {}
         saved = analysis.get("saved_intervention_assessment")
+
         if saved:
             return saved
 
@@ -138,34 +161,44 @@ def _find_saved_intervention(
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    return (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    return (
+        ROOT / "static" / "index.html"
+    ).read_text(encoding="utf-8")
 
 
 @app.get("/api/health")
 def health():
     key = os.getenv("GEMINI_API_KEY", "").strip()
+
     return {
         "status": "ok",
         "gemini_key_configured": bool(
             key and key != "replace_with_your_key"
         ),
         "model": os.getenv(
-            "GEMINI_MODEL", "gemini-3.8-flash"
+            "GEMINI_MODEL",
+            "gemini-3.8-flash",
         ).strip() or "gemini-3.8-flash",
         "streaming": True,
         "database": "SQLite",
         "workflow_lineage": True,
         "automatic_causal_analysis": True,
+        "automatic_api_execution": True,
         "causal_verification": (
-            "Evidence-backed checks; user observations are not "
-            "independently authenticated."
+            "Recorded API responses and observations are evidence, "
+            "but are not independently authenticated."
         ),
     }
 
 
+# -------------------------------------------------------------------
+# Step 02: Planning
+# -------------------------------------------------------------------
+
 @app.post("/api/plan")
 def create_plan(req: PlanRequest):
     gemini = service()
+
     try:
         plan = gemini.plan(req.task)
         structure = validate_plan_structure(plan, 3, 12)
@@ -180,7 +213,10 @@ def create_plan(req: PlanRequest):
             )
 
         run_id = save_run(
-            req.task, gemini.model, plan, phase="plan"
+            req.task,
+            gemini.model,
+            plan,
+            phase="plan",
         )
 
         return {
@@ -190,9 +226,11 @@ def create_plan(req: PlanRequest):
             "task": req.task,
             "plan": plan,
             "notice": (
-                "Plan generated by Gemini. No real-world actions were executed."
+                "Plan generated by Gemini. "
+                "No real-world actions have been executed yet."
             ),
         }
+
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -202,44 +240,48 @@ def create_plan_stream(req: PlanRequest):
     def generate():
         try:
             gemini = GeminiService()
+
             yield _sse({
                 "type": "status",
                 "message": "Request accepted. Connecting to Gemini…",
             })
 
             for event in gemini.stream_plan(req.task):
-                if event.get("type") == "result":
-                    plan = event["plan"]
-                    structure = validate_plan_structure(plan, 3, 12)
+                if event.get("type") != "result":
+                    yield _sse(event)
+                    continue
 
-                    if not structure["valid"]:
-                        yield _sse({
-                            "type": "error",
-                            "message": (
-                                "Generated plan failed structural validation: "
-                                + "; ".join(structure["errors"])
-                            ),
-                        })
-                        return
+                plan = event["plan"]
+                structure = validate_plan_structure(plan, 3, 12)
 
-                    run_id = save_run(
-                        req.task, gemini.model, plan, phase="plan"
-                    )
-
+                if not structure["valid"]:
                     yield _sse({
-                        "type": "complete",
-                        "run_id": run_id,
-                        "workflow_id": run_id,
-                        "model": gemini.model,
-                        "task": req.task,
-                        "plan": plan,
-                        "notice": (
-                            "Plan generated by Gemini. "
-                            "No real-world actions were executed."
+                        "type": "error",
+                        "message": (
+                            "Generated plan failed structural validation: "
+                            + "; ".join(structure["errors"])
                         ),
                     })
-                else:
-                    yield _sse(event)
+                    return
+
+                run_id = save_run(
+                    req.task,
+                    gemini.model,
+                    plan,
+                    phase="plan",
+                )
+
+                yield _sse({
+                    "type": "complete",
+                    "run_id": run_id,
+                    "workflow_id": run_id,
+                    "model": gemini.model,
+                    "task": req.task,
+                    "plan": plan,
+                    "notice": (
+                        "Plan generated. No external actions were executed."
+                    ),
+                })
 
         except Exception as exc:
             yield _sse({
@@ -257,6 +299,96 @@ def create_plan_stream(req: PlanRequest):
         },
     )
 
+
+# -------------------------------------------------------------------
+# Step 03: Automatic execution and trace capture
+# -------------------------------------------------------------------
+
+@app.get("/api/execution/tools")
+def execution_tools():
+    """List configured tools without exposing API keys or full URLs."""
+    try:
+        tools = list_tools()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "configured": bool(tools),
+        "tools": tools,
+        "notice": (
+            "Only server-configured HTTPS API tools are available. "
+            "Credentials remain on the server."
+        ),
+    }
+
+
+@app.post("/api/execute")
+def execute(req: ExecuteRequest):
+    """Execute configured API calls and automatically persist their trace."""
+    run = _ensure_run(req.run_id)
+
+    try:
+        events = execute_plan(
+            run["plan"],
+            [
+                binding.model_dump(mode="json")
+                for binding in req.bindings
+            ],
+            confirm_external_actions=req.confirm_external_actions,
+        )
+
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    unknown = _unknown_step_ids(events, _step_ids(run["plan"]))
+
+    if unknown:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "The execution engine returned unknown step IDs.",
+                "unknown_step_ids": unknown,
+            },
+        )
+
+    report = verify_run(run["plan"], events)
+    workflow_id = run.get("workflow_id") or run["id"]
+
+    new_id = save_run(
+        run["task"],
+        run["model"],
+        run["plan"],
+        diagnosis=run.get("diagnosis"),
+        repair=run.get("repair"),
+        issue=run.get("issue", ""),
+        trace=events,
+        verification=report,
+        workflow_id=workflow_id,
+        parent_run_id=run["id"],
+        phase="execution",
+    )
+
+    return {
+        "run_id": new_id,
+        "source_run_id": run["id"],
+        "workflow_id": workflow_id,
+        "trace_event_count": len(events),
+        "trace_events": events,
+        "verification": report,
+        "notice": (
+            "Trace events were captured automatically from configured API calls. "
+            "Unbound or blocked steps are recorded as skipped. An HTTP success "
+            "does not independently prove a downstream real-world effect."
+        ),
+    }
+
+
+# -------------------------------------------------------------------
+# Optional legacy endpoint: accept an externally collected trace
+# -------------------------------------------------------------------
 
 @app.post("/api/trace")
 def submit_trace(req: TraceSubmission):
@@ -287,11 +419,15 @@ def submit_trace(req: TraceSubmission):
         "unknown_step_ids": unknown,
         "verification": report,
         "notice": (
-            "Trace contains user-supplied evidence only. "
-            "NS-CR did not execute or authenticate events."
+            "This legacy endpoint accepts submitted events. "
+            "For automatic API execution, use POST /api/execute."
         ),
     }
 
+
+# -------------------------------------------------------------------
+# Verification
+# -------------------------------------------------------------------
 
 @app.post("/api/verify")
 def verify(req: DiagnoseRequest):
@@ -300,10 +436,11 @@ def verify(req: DiagnoseRequest):
     if not run.get("trace"):
         raise HTTPException(
             status_code=400,
-            detail="Add an actual execution trace before verification.",
+            detail="Execute configured APIs or provide a trace before verification.",
         )
 
     report = verify_run(run["plan"], run["trace"])
+
     new_id = save_run(
         run["task"],
         run["model"],
@@ -324,11 +461,15 @@ def verify(req: DiagnoseRequest):
         "workflow_id": run.get("workflow_id"),
         "verification": report,
         "notice": (
-            "Deterministic checks validate entered evidence only; "
-            "they do not prove it is complete or truthful."
+            "Verification checks recorded evidence; it does not prove "
+            "the evidence is complete or truthful."
         ),
     }
 
+
+# -------------------------------------------------------------------
+# Step 04: Diagnosis
+# -------------------------------------------------------------------
 
 @app.post("/api/diagnose")
 def diagnose(req: DiagnoseRequest):
@@ -360,20 +501,21 @@ def diagnose(req: DiagnoseRequest):
             "alternative_causes": [],
             "confidence": 0.0,
             "repair_action": (
-                "Record genuine execution observations and their sources "
+                "Execute configured APIs or collect genuine observations "
                 "before requesting a diagnosis."
             ),
             "requires_human_confirmation": True,
             "limitations": [
-                "No non-template event with a known status and observation "
-                "was supplied. A plan or generated template is not an "
-                "execution trace."
+                "No non-template event with a known status and recorded "
+                "observation was supplied."
             ],
             "evidence_event_ids": [],
             "causal_status": "undetermined",
         }
+
     else:
         gemini = service()
+
         try:
             diagnosis = gemini.diagnose(
                 run["task"],
@@ -384,10 +526,12 @@ def diagnose(req: DiagnoseRequest):
             )
         except RuntimeError as exc:
             raise HTTPException(
-                status_code=502, detail=str(exc)
+                status_code=502,
+                detail=str(exc),
             ) from exc
 
     issue = req.issue or run.get("issue", "")
+
     new_id = save_run(
         run["task"],
         run["model"],
@@ -409,11 +553,15 @@ def diagnose(req: DiagnoseRequest):
         "diagnosis": diagnosis,
         "verification": verification,
         "notice": (
-            "A diagnosis is a hypothesis. Model confidence and temporal "
-            "order are not proof of causality."
+            "A diagnosis is a hypothesis. Model confidence and event order "
+            "alone are not proof of causality."
         ),
     }
 
+
+# -------------------------------------------------------------------
+# Step 06: Intervention / counterfactual assessment
+# -------------------------------------------------------------------
 
 @app.post("/api/counterfactual")
 def counterfactual(req: CounterfactualRequest):
@@ -436,7 +584,7 @@ def counterfactual(req: CounterfactualRequest):
         "verification": report,
         "notice": (
             "This evaluates reported intervention observations. "
-            "NS-CR did not execute the intervention or authenticate the source."
+            "NS-CR did not execute the intervention or authenticate its source."
         ),
     }
 
@@ -448,7 +596,10 @@ def counterfactual(req: CounterfactualRequest):
         repair=run.get("repair"),
         issue=run.get("issue", ""),
         trace=run.get("trace"),
-        verification={**report, "intervention_assessment": result},
+        verification={
+            **report,
+            "intervention_assessment": result,
+        },
         workflow_id=run.get("workflow_id"),
         parent_run_id=run["id"],
         phase="counterfactual",
@@ -462,12 +613,13 @@ def counterfactual(req: CounterfactualRequest):
     }
 
 
+# -------------------------------------------------------------------
+# Step 06: Automatic causal-analysis report
+# -------------------------------------------------------------------
+
 @app.post("/api/causal-analysis")
 def causal_analysis(req: CausalAnalysisRequest):
-    """
-    Analyze saved workflow evidence. Missing evidence stays missing;
-    no baseline, outcome, or intervention is inferred.
-    """
+    """Analyze saved workflow evidence without inventing missing observations."""
     selected = _ensure_run(req.run_id)
     workflow_id = selected.get("workflow_id") or selected["id"]
     workflow_runs = get_workflow_runs(workflow_id)
@@ -477,12 +629,12 @@ def causal_analysis(req: CausalAnalysisRequest):
 
     diagnosis_run = next(
         (
-            item
-            for item in reversed(workflow_runs)
+            item for item in reversed(workflow_runs)
             if item is not None and item.get("diagnosis")
         ),
         None,
     )
+
     trace_run = next(
         (
             item for item in reversed(workflow_runs)
@@ -491,14 +643,12 @@ def causal_analysis(req: CausalAnalysisRequest):
         None,
     )
 
-    diagnosis = (
-        diagnosis_run.get("diagnosis")
-        if diagnosis_run else None
-    )
+    diagnosis = diagnosis_run.get("diagnosis") if diagnosis_run else None
     trace = (
         trace_run.get("trace") or []
         if trace_run else []
     )
+
     actual_events = [
         event for event in trace
         if _is_actual_trace_event(event)
@@ -520,52 +670,45 @@ def causal_analysis(req: CausalAnalysisRequest):
         missing_evidence.append({
             "item": "diagnosis",
             "reason": "No saved diagnosis exists in this workflow.",
-            "action": (
-                "Save actual trace observations and run diagnosis."
-            ),
+            "action": "Execute APIs and run diagnosis against the saved trace.",
         })
 
     if not trace:
         missing_evidence.append({
             "item": "execution_trace",
             "reason": "No saved execution trace exists in this workflow.",
-            "action": "Save a trace based on actual observations.",
+            "action": "Execute configured APIs or collect real observations.",
         })
     elif not actual_events:
         missing_evidence.append({
             "item": "actual_trace_observations",
-            "reason": (
-                "The trace has no non-template event with a known status "
-                "and recorded observation."
-            ),
-            "action": (
-                "Replace placeholders with genuine observations and save "
-                "the trace. Do not change unknown outcomes without evidence."
-            ),
+            "reason": "No trace event has both a known status and observation.",
+            "action": "Collect actual execution observations; do not invent outcomes.",
         })
 
     if not intervention_payload:
         missing_evidence.append({
             "item": "intervention_evidence",
-            "reason": (
-                "No saved intervention assessment was found in this workflow."
-            ),
+            "reason": "No saved intervention assessment was found.",
             "action": (
-                "Only if a controlled intervention was actually performed, "
-                "record the observed baseline, post-intervention outcome, "
-                "conditions held constant, and evidence source."
+                "Only if an intervention was actually performed, record its "
+                "baseline outcome, post-intervention outcome, controlled "
+                "conditions, and evidence source."
             ),
         })
+
         causal_status = "undetermined"
         conclusion = (
-            "No saved intervention comparison was found. The intervention "
-            "effect is undetermined; no baseline or post-intervention "
-            "outcome has been inferred."
+            "No saved intervention comparison was found. The causal effect "
+            "remains undetermined."
         )
+
     else:
         executed = intervention_payload.get(
-            "intervention_was_executed", False
+            "intervention_was_executed",
+            False,
         )
+
         required = {
             "candidate_step_id": "candidate step ID",
             "intervention_description": "intervention description",
@@ -579,32 +722,21 @@ def causal_analysis(req: CausalAnalysisRequest):
                 missing_evidence.append({
                     "item": field,
                     "reason": f"The saved record is missing the {label}.",
-                    "action": (
-                        "Supply it only if it is available from an actual "
-                        "observation or record."
-                    ),
+                    "action": "Supply this only when supported by actual evidence.",
                 })
 
         if not executed:
             missing_evidence.append({
                 "item": "executed_intervention_evidence",
-                "reason": (
-                    "The saved record does not state that the intervention "
-                    "was performed and both outcomes observed."
-                ),
-                "action": (
-                    "Do not mark it executed unless it actually happened."
-                ),
+                "reason": "The saved record does not confirm execution.",
+                "action": "Do not mark the intervention executed unless it happened.",
             })
 
         if not intervention_payload.get("conditions_held_constant"):
             missing_evidence.append({
                 "item": "controlled_conditions",
                 "reason": "No controlled conditions were recorded.",
-                "action": (
-                    "Record relevant conditions that were actually held "
-                    "constant, if known."
-                ),
+                "action": "Record relevant conditions actually held constant.",
             })
 
         saved_status = (
@@ -627,19 +759,22 @@ def causal_analysis(req: CausalAnalysisRequest):
                 "The saved intervention record is incomplete or does not "
                 "confirm execution. The causal effect remains undetermined."
             )
+
         elif saved_status == "intervention_supported":
             causal_status = "intervention_supported"
             conclusion = (
-                "The recorded outcomes differ under the reported controlled "
-                "intervention. This supports a possible effect but does not "
-                "prove causality or independently authenticate the evidence."
+                "The recorded outcomes differ under the reported intervention. "
+                "This supports a possible effect but does not prove causality "
+                "or independently authenticate the evidence."
             )
+
         elif saved_status == "not_supported":
             causal_status = "not_supported"
             conclusion = (
                 "The recorded outcomes did not differ. This comparison does "
                 "not support an effect for the reported intervention."
             )
+
         else:
             causal_status = "undetermined"
             conclusion = (
@@ -670,7 +805,9 @@ def causal_analysis(req: CausalAnalysisRequest):
             "diagnosis_run_id": (
                 diagnosis_run["id"] if diagnosis_run else None
             ),
-            "trace_run_id": trace_run["id"] if trace_run else None,
+            "trace_run_id": (
+                trace_run["id"] if trace_run else None
+            ),
             "saved_trace_event_count": len(trace),
             "actual_observation_event_count": len(actual_events),
             "saved_intervention_assessment": (
@@ -684,11 +821,9 @@ def causal_analysis(req: CausalAnalysisRequest):
         "human_review_required": True,
         "limitations": [
             "Only records saved in this workflow were considered.",
-            "User-supplied observations and evidence sources are not "
-            "independently authenticated.",
-            "Diagnosis hypotheses and temporal order alone do not establish "
-            "causation.",
-            "NS-CR does not execute interventions.",
+            "API responses and user-supplied evidence are not independently authenticated.",
+            "A diagnosis hypothesis or event order alone does not establish causation.",
+            "NS-CR does not automatically perform causal interventions.",
         ],
     }
 
@@ -700,7 +835,10 @@ def causal_analysis(req: CausalAnalysisRequest):
         repair=selected.get("repair"),
         issue=selected.get("issue", ""),
         trace=trace if trace else None,
-        verification={"causal_analysis": analysis, **report},
+        verification={
+            "causal_analysis": analysis,
+            **report,
+        },
         workflow_id=workflow_id,
         parent_run_id=selected["id"],
         phase="causal_analysis",
@@ -712,6 +850,10 @@ def causal_analysis(req: CausalAnalysisRequest):
         **analysis,
     }
 
+
+# -------------------------------------------------------------------
+# Step 05: Repair proposal
+# -------------------------------------------------------------------
 
 @app.post("/api/repair")
 def repair(req: RepairRequest):
@@ -727,12 +869,16 @@ def repair(req: RepairRequest):
 
     try:
         repair_data = gemini.repair(
-            run["task"], run["plan"], run["diagnosis"]
+            run["task"],
+            run["plan"],
+            run["diagnosis"],
         )
+
         revised_plan = {
             **run["plan"],
             "steps": repair_data.get("revised_steps", []),
         }
+
         structure = validate_plan_structure(revised_plan, 1, 20)
 
         if not structure["valid"]:
@@ -769,9 +915,14 @@ def repair(req: RepairRequest):
                 "or outcome-verified."
             ),
         }
+
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+
+# -------------------------------------------------------------------
+# Step 07: Retest evidence
+# -------------------------------------------------------------------
 
 @app.post("/api/retest")
 def retest(req: RetestRequest):
@@ -834,6 +985,10 @@ def retest(req: RetestRequest):
         ),
     }
 
+
+# -------------------------------------------------------------------
+# Step 08: Workflow history
+# -------------------------------------------------------------------
 
 @app.get("/api/runs")
 def runs():

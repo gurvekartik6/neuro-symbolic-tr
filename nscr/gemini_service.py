@@ -44,27 +44,37 @@ def validate_step_graph(
         )
 
     step_ids = [step.get("id") for step in steps]
+
     if any(not isinstance(step_id, str) or not step_id for step_id in step_ids):
         raise ValueError("every step must have a non-empty string ID")
+
     if len(step_ids) != len(set(step_ids)):
         raise ValueError("step IDs must be unique")
 
     known_ids = set(step_ids)
     dependencies: dict[str, list[str]] = {}
+
     for step in steps:
         step_id = step["id"]
         depends_on = step.get("depends_on", [])
+
         if not isinstance(depends_on, list) or any(
             not isinstance(dependency, str) for dependency in depends_on
         ):
-            raise ValueError(f"step {step_id} dependencies must be a list of IDs")
+            raise ValueError(
+                f"step {step_id} dependencies must be a list of IDs"
+            )
+
         unknown = set(depends_on) - known_ids
+
         if unknown:
             raise ValueError(
                 f"step {step_id} references unknown step IDs: {sorted(unknown)}"
             )
+
         if step_id in depends_on:
             raise ValueError(f"step {step_id} cannot depend on itself")
+
         dependencies[step_id] = depends_on
 
     visiting: set[str] = set()
@@ -73,11 +83,15 @@ def validate_step_graph(
     def visit(step_id: str) -> None:
         if step_id in visiting:
             raise ValueError("step dependencies contain a cycle")
+
         if step_id in visited:
             return
+
         visiting.add(step_id)
+
         for dependency in dependencies[step_id]:
             visit(dependency)
+
         visiting.remove(step_id)
         visited.add(step_id)
 
@@ -542,12 +556,14 @@ Require human confirmation for consequential actions."""
         valid_revised = {step["id"] for step in revised_steps}
 
         result["changed_step_ids"] = [
-            value for value in result["changed_step_ids"]
+            value
+            for value in result["changed_step_ids"]
             if value in valid_revised
         ]
 
         result["preserved_step_ids"] = [
-            value for value in result["preserved_step_ids"]
+            value
+            for value in result["preserved_step_ids"]
             if value in valid_revised
         ]
 

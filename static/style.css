@@ -1,6 +1,7 @@
+
 /* =========================================================
    NS-CR Research Lab — Responsive UI Styles
-   Fixes long JSON, diagnosis output and horizontal overflow
+   Responsive layout, API execution, trace display and outputs
    ========================================================= */
 
 /* ---------- Theme ---------- */
@@ -19,6 +20,7 @@
     --secondary-hover: #e8eef9;
     --success: #137547;
     --danger: #b42318;
+    --warning: #946200;
     --radius: 12px;
     --shadow: 0 2px 8px rgba(28, 46, 80, 0.045);
 }
@@ -162,7 +164,7 @@ main {
     display: none !important;
 }
 
-/* Prevent flex/grid children from forcing their parent wider. */
+/* Prevent long content from widening the page. */
 
 .panel *,
 .step-title > div,
@@ -170,7 +172,9 @@ main {
 #verificationView,
 #diagnosisView,
 #repairView,
-#runs {
+#runs,
+#executionBindings,
+#executionTraceView {
     min-width: 0;
     max-width: 100%;
 }
@@ -210,7 +214,6 @@ main {
     color: var(--muted);
     font-size: 12px;
     overflow-wrap: anywhere;
-    word-break: normal;
 }
 
 .step-title > button {
@@ -322,7 +325,12 @@ button:active:not(:disabled) {
 #planBtn,
 #traceBtn,
 #diagnoseBtn,
-#repairBtn {
+#repairBtn,
+#executeApisBtn,
+#verifyBtn,
+#causalAnalysisBtn,
+#counterfactualBtn,
+#retestBtn {
     margin-top: 2px;
 }
 
@@ -335,7 +343,6 @@ button:active:not(:disabled) {
     border-radius: 8px;
     background: #ffffff;
     overflow-wrap: anywhere;
-    word-break: normal;
 }
 
 .alert.error,
@@ -390,7 +397,6 @@ button:active:not(:disabled) {
 #repairView p,
 #repairView li {
     overflow-wrap: anywhere;
-    word-break: normal;
 }
 
 #planView ul,
@@ -404,7 +410,7 @@ button:active:not(:disabled) {
     padding-left: 22px;
 }
 
-/* ---------- JSON, code and diagnosis output ---------- */
+/* ---------- JSON and code output ---------- */
 
 pre,
 code,
@@ -449,6 +455,208 @@ pre code {
 #repairView > * {
     max-width: 100%;
     overflow-wrap: anywhere;
+}
+
+/* ---------- Automatic API execution panel ---------- */
+
+#executionPanel {
+    scroll-margin-top: 20px;
+}
+
+#executionToolStatus {
+    margin: 8px 0 14px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--secondary-bg);
+    color: var(--muted);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+#executionToolStatus[data-type="success"] {
+    border-color: #b9e3cb;
+    background: #f0fbf4;
+    color: var(--success);
+}
+
+#executionToolStatus[data-type="error"] {
+    border-color: #f0c4c0;
+    background: #fff4f2;
+    color: var(--danger);
+}
+
+#executionBindings {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    width: 100%;
+    margin: 12px 0 16px;
+}
+
+.execution-binding,
+.binding-card,
+.execution-step-binding {
+    min-width: 0;
+    padding: 15px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: #fbfcff;
+}
+
+.execution-binding h3,
+.binding-card h3,
+.execution-step-binding h3 {
+    margin: 0 0 8px;
+    font-size: 14px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.execution-binding p,
+.binding-card p,
+.execution-step-binding p {
+    margin: 4px 0 10px;
+    color: var(--muted);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+#executionBindings label {
+    display: block;
+    margin: 10px 0 5px;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+#executionBindings select,
+#executionBindings input,
+#executionBindings textarea {
+    margin-bottom: 10px;
+}
+
+#executionBindings textarea {
+    min-height: 76px;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: 12px;
+}
+
+.execution-confirmation {
+    margin: 12px 0 16px;
+    padding: 12px 14px;
+    border: 1px solid #ead7a7;
+    border-radius: 8px;
+    background: #fffaf0;
+    color: #684c0c;
+}
+
+.execution-confirmation label,
+.check-row {
+    display: flex !important;
+    align-items: flex-start;
+    gap: 9px;
+    margin: 0;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.execution-confirmation input[type="checkbox"],
+.check-row input[type="checkbox"] {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    margin: 3px 0 0;
+    accent-color: var(--primary);
+}
+
+#executeApisBtn {
+    min-width: 160px;
+}
+
+#executionTraceView {
+    margin-top: 16px;
+    overflow-wrap: anywhere;
+}
+
+#executionTraceView h3,
+#executionTraceView h4 {
+    margin: 14px 0 7px;
+    font-size: 14px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+#executionTraceView p,
+#executionTraceView li {
+    overflow-wrap: anywhere;
+}
+
+#executionTraceView pre {
+    max-height: 460px;
+    overflow: auto;
+}
+
+.trace-event,
+.execution-event,
+.trace-card {
+    min-width: 0;
+    margin: 10px 0;
+    padding: 13px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #ffffff;
+}
+
+.trace-event-header,
+.execution-event-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.trace-event-header strong,
+.execution-event-header strong {
+    overflow-wrap: anywhere;
+}
+
+.trace-status,
+.execution-status {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: var(--secondary-bg);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.trace-status.success,
+.execution-status.success {
+    border-color: #b9e3cb;
+    background: #f0fbf4;
+    color: var(--success);
+}
+
+.trace-status.failed,
+.trace-status.error,
+.execution-status.failed,
+.execution-status.error {
+    border-color: #f0c4c0;
+    background: #fff4f2;
+    color: var(--danger);
+}
+
+.trace-status.skipped,
+.execution-status.skipped {
+    border-color: #ead7a7;
+    background: #fffaf0;
+    color: var(--warning);
 }
 
 /* ---------- Trace generator ---------- */
@@ -530,7 +738,11 @@ footer {
 
 /* ---------- Keyboard accessibility ---------- */
 
-button:focus-visible {
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
     outline: 3px solid rgba(49, 87, 173, 0.35);
     outline-offset: 3px;
 }
@@ -562,6 +774,12 @@ button:focus-visible {
 
     pre {
         padding: 11px;
+    }
+
+    .execution-binding,
+    .binding-card,
+    .execution-step-binding {
+        padding: 12px;
     }
 }
 
@@ -657,6 +875,20 @@ button:focus-visible {
     .divider {
         margin: 19px 0;
     }
+
+    #executeApisBtn {
+        width: 100%;
+    }
+
+    .execution-confirmation {
+        padding: 10px;
+    }
+
+    .trace-event,
+    .execution-event,
+    .trace-card {
+        padding: 10px;
+    }
 }
 
 /* ---------- Reduced motion ---------- */
@@ -672,7 +904,7 @@ button:focus-visible {
     }
 }
 
-/* Additional workflow inputs */
+/* ---------- Workflow inputs ---------- */
 
 .panel label {
     display: block;

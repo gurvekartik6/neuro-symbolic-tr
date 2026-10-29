@@ -4,42 +4,59 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101827">
+    <meta
+        name="description"
+        content="NS-CR research prototype for evidence-backed planning, API execution, diagnosis, repair, and causal analysis."
+    >
     <title>NS-CR Research Lab</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=20261029-6">
 </head>
 
 <body>
     <header>
         <div class="brand">NS</div>
+
         <div>
             <p class="kicker">GEMINI-POWERED RESEARCH PROTOTYPE</p>
             <h1>NS-CR Research Lab</h1>
-            <p class="sub">Plan · Diagnose · Repair</p>
+            <p class="sub">Plan · Execute · Diagnose · Repair · Retest</p>
         </div>
-        <span id="service" class="status">Checking service…</span>
+
+        <span id="service" class="status" role="status">
+            Checking service…
+        </span>
     </header>
 
     <main>
-        <div id="alert" class="alert hidden"></div>
+        <div
+            id="alert"
+            class="alert hidden"
+            role="status"
+            aria-live="polite"
+        ></div>
 
-        <!-- STEP 01 -->
+        <!-- STEP 01: TASK -->
         <section class="panel">
             <div class="step-title">
                 <span>01</span>
                 <div>
                     <h2>Describe your task</h2>
                     <p>
-                        Gemini will create a structured plan and explicit
-                        constraints. No actions are executed.
+                        Describe the workflow you want NS-CR to analyze.
+                        Gemini proposes a plan; real actions are executed
+                        only through explicitly configured APIs.
                     </p>
                 </div>
             </div>
+
+            <label for="task">Task description</label>
 
             <textarea
                 id="task"
                 rows="4"
                 maxlength="6000"
-                placeholder="Describe a workflow you want to analyze."
+                placeholder="Describe the task, its expected result, and any important constraints."
             ></textarea>
 
             <button id="planBtn" class="primary" type="button">
@@ -61,52 +78,117 @@
 
             <div id="planView"></div>
 
+            <p class="trace-help">
+                A generated plan describes intended actions. It is not
+                evidence that those actions have been performed.
+            </p>
+
             <div class="divider"></div>
 
-            <!-- STEP 03: TRACE -->
+            <!-- STEP 03: AUTOMATIC EXECUTION -->
             <div class="step-title">
                 <span>03</span>
                 <div>
-                    <h2>Record actual execution evidence</h2>
+                    <h2>Automatic execution and trace capture</h2>
                     <p>
-                        Generate a trace template, then replace placeholders
-                        with genuine observations. Templates remain unknown
-                        until actual outcomes are recorded.
+                        Run configured real HTTP APIs and capture execution
+                        events automatically.
                     </p>
                 </div>
             </div>
 
-            <div class="trace-template-actions">
-                <button id="generateTraceBtn" class="secondary" type="button">
-                    Generate Trace JSON
-                </button>
-                <button id="copyTraceBtn" class="secondary" type="button">
-                    Copy Trace JSON
-                </button>
-            </div>
-
-            <p id="traceTemplateMessage" role="status" aria-live="polite"></p>
-
-            <textarea
-                id="traceJson"
-                rows="12"
-                spellcheck="false"
-                placeholder="Click Generate Trace JSON after generating a plan."
-            ></textarea>
-
             <p class="trace-help">
-                Generated entries are templates, not proof of execution.
-                Use only real logs and observations. Never change an unknown
-                status unless the actual outcome is known.
+                NS-CR records the API call, timestamp, HTTP status,
+                response excerpt, and failures. Steps without a configured
+                tool or with blocked dependencies are recorded as skipped.
+                The app does not invent successful events.
             </p>
 
-            <div class="trace-template-actions">
-                <button id="traceBtn" class="secondary" type="button">
-                    Save and validate trace
+            <!-- app.js creates the API binding interface here. -->
+            <div id="executionPanel">
+                <p id="executionToolStatus" role="status">
+                    Loading configured API tools…
+                </p>
+
+                <div id="executionBindings"></div>
+
+                <label class="check-row">
+                    <input
+                        id="confirmExternalActions"
+                        type="checkbox"
+                    >
+                    I authorize the selected state-changing API calls
+                    after reviewing their parameters.
+                </label>
+
+                <button
+                    id="executeApisBtn"
+                    class="primary"
+                    type="button"
+                >
+                    Execute configured APIs and capture trace
                 </button>
-                <button id="verifyBtn" class="secondary" type="button">
-                    Re-run verification
-                </button>
+
+                <div id="executionTraceView"></div>
+            </div>
+
+            <p class="trace-help">
+                Only server-configured HTTPS endpoints are allowed.
+                An HTTP success response does not independently prove that
+                a real-world effect occurred.
+            </p>
+
+            <!-- Legacy IDs retained for compatibility with existing scripts.
+                 The updated app.js hides these manual trace controls. -->
+            <div id="legacyTraceEditor" class="hidden">
+                <div class="trace-template-actions">
+                    <button
+                        id="generateTraceBtn"
+                        class="secondary"
+                        type="button"
+                    >
+                        Generate Trace JSON
+                    </button>
+
+                    <button
+                        id="copyTraceBtn"
+                        class="secondary"
+                        type="button"
+                    >
+                        Copy Trace JSON
+                    </button>
+                </div>
+
+                <p
+                    id="traceTemplateMessage"
+                    role="status"
+                    aria-live="polite"
+                ></p>
+
+                <textarea
+                    id="traceJson"
+                    rows="12"
+                    spellcheck="false"
+                    placeholder="Automatically captured execution events appear here."
+                ></textarea>
+
+                <div class="trace-template-actions">
+                    <button
+                        id="traceBtn"
+                        class="secondary"
+                        type="button"
+                    >
+                        Save and validate trace
+                    </button>
+
+                    <button
+                        id="verifyBtn"
+                        class="secondary"
+                        type="button"
+                    >
+                        Re-run verification
+                    </button>
+                </div>
             </div>
 
             <div id="verificationView"></div>
@@ -119,18 +201,20 @@
                 <div>
                     <h2>Diagnose a failure</h2>
                     <p>
-                        Gemini uses supplied execution events and deterministic
-                        verification. Without sufficient evidence, the root
-                        cause remains undetermined.
+                        Analyze captured execution events and verification
+                        results. A root cause remains undetermined when
+                        evidence is insufficient.
                     </p>
                 </div>
             </div>
+
+            <label for="issue">Observed problem (optional)</label>
 
             <textarea
                 id="issue"
                 rows="3"
                 maxlength="3000"
-                placeholder="Describe the actual problem or error you observed."
+                placeholder="Describe an error or unexpected result, if known."
             ></textarea>
 
             <button id="diagnoseBtn" class="primary" type="button">
@@ -148,8 +232,8 @@
                     <div>
                         <h2>Propose a repair</h2>
                         <p>
-                            Generate a proposed revision and identify which
-                            steps can be preserved.
+                            Generate a proposed revision and identify
+                            the steps that can be preserved.
                         </p>
                     </div>
                 </div>
@@ -161,25 +245,24 @@
                 <div id="repairView"></div>
             </div>
 
-            <!-- STEP 06: AUTOMATIC CAUSAL ANALYSIS -->
+            <!-- STEP 06: CAUSAL ANALYSIS -->
             <div class="divider"></div>
 
             <div class="step-title">
                 <span>06</span>
                 <div>
-                    <h2>Automatic Causal Analysis</h2>
+                    <h2>Automatic causal analysis</h2>
                     <p>
-                        Analyze the diagnosis, trace, and intervention
-                        evidence already saved in this workflow.
+                        Examine saved traces, diagnosis, and intervention
+                        evidence for supported conclusions and evidence gaps.
                     </p>
                 </div>
             </div>
 
             <p class="trace-help">
-                NS-CR reads the saved workflow and identifies evidence gaps.
-                It never invents a baseline or claims an intervention
-                occurred when it did not. An undetermined result is valid
-                when the evidence is insufficient.
+                NS-CR does not automatically perform interventions.
+                It analyzes saved evidence and distinguishes a hypothesis
+                from a supported intervention result.
             </p>
 
             <button
@@ -192,14 +275,15 @@
 
             <div id="counterfactualView"></div>
 
-            <!-- Only shown when analysis identifies missing intervention evidence -->
-            <details id="additionalInterventionEvidence" class="hidden">
+            <details
+                id="additionalInterventionEvidence"
+                class="hidden"
+            >
                 <summary>Provide missing intervention evidence</summary>
 
                 <p class="trace-help">
                     Complete this section only if the intervention was
-                    actually performed and the outcomes were observed.
-                    Do not guess missing values.
+                    actually performed and both outcomes were observed.
                 </p>
 
                 <label for="cfStep">Candidate step ID</label>
@@ -207,15 +291,17 @@
                     id="cfStep"
                     type="text"
                     maxlength="40"
-                    placeholder="e.g. step_2"
+                    placeholder="For example: step_2"
                 >
 
-                <label for="cfDescription">Intervention performed</label>
+                <label for="cfDescription">
+                    Intervention actually performed
+                </label>
                 <textarea
                     id="cfDescription"
                     rows="2"
                     maxlength="2000"
-                    placeholder="Describe the specific change actually made."
+                    placeholder="Describe the change that was actually made."
                 ></textarea>
 
                 <label for="cfBaseline">Observed baseline outcome</label>
@@ -223,15 +309,17 @@
                     id="cfBaseline"
                     rows="2"
                     maxlength="2000"
-                    placeholder="Recorded outcome before the intervention."
+                    placeholder="Record the observed outcome before the intervention."
                 ></textarea>
 
-                <label for="cfOutcome">Observed outcome after intervention</label>
+                <label for="cfOutcome">
+                    Observed outcome after intervention
+                </label>
                 <textarea
                     id="cfOutcome"
                     rows="2"
                     maxlength="2000"
-                    placeholder="Recorded outcome after the intervention."
+                    placeholder="Record the observed outcome after the intervention."
                 ></textarea>
 
                 <label for="cfControls">
@@ -240,7 +328,7 @@
                 <textarea
                     id="cfControls"
                     rows="3"
-                    placeholder="Only list conditions known to have been held constant."
+                    placeholder="List only conditions known to have remained constant."
                 ></textarea>
 
                 <label for="cfSource">Evidence source</label>
@@ -248,13 +336,12 @@
                     id="cfSource"
                     type="text"
                     maxlength="500"
-                    placeholder="Log file, measurement record, test report…"
+                    placeholder="Log file, measurement record, or test report."
                 >
 
                 <label class="check-row">
                     <input id="cfExecuted" type="checkbox">
-                    I actually performed this intervention and observed
-                    both outcomes.
+                    I performed this intervention and observed both outcomes.
                 </label>
 
                 <button
@@ -274,16 +361,16 @@
                 <div>
                     <h2>Retest the proposed repair</h2>
                     <p>
-                        Use genuine post-repair observations for every
-                        revised step. Generated templates remain unknown
-                        until replaced with actual evidence.
+                        Evaluate recorded outcomes for the revised plan.
+                        A proposed repair is not automatically executed.
                     </p>
                 </div>
             </div>
 
             <p class="trace-help">
-                Retest requires a saved repair proposal and revised plan.
-                The app does not execute the repair for you.
+                The retest template contains unknown outcomes until replaced
+                with genuine observations. Do not mark a step successful
+                without supporting evidence.
             </p>
 
             <button
@@ -294,11 +381,13 @@
                 Generate retest trace template
             </button>
 
+            <label for="retestTraceJson">Retest evidence (JSON)</label>
+
             <textarea
                 id="retestTraceJson"
                 rows="10"
                 spellcheck="false"
-                placeholder="Generate a retest template, then replace placeholders with real observations."
+                placeholder="Generate a template, then replace unknown placeholders with actual observations."
             ></textarea>
 
             <button id="retestBtn" class="primary" type="button">
@@ -308,13 +397,15 @@
             <div id="retestView"></div>
         </section>
 
-        <!-- SAVED RUNS -->
+        <!-- STEP 08: HISTORY -->
         <section class="panel">
             <div class="step-title">
-                <span>↻</span>
+                <span>08</span>
                 <div>
-                    <h2>Saved runs</h2>
-                    <p>Runs are stored locally in SQLite on this server.</p>
+                    <h2>Workflow history</h2>
+                    <p>
+                        Open saved runs and review their recorded evidence.
+                    </p>
                 </div>
 
                 <button id="refreshBtn" class="secondary" type="button">
@@ -322,16 +413,17 @@
                 </button>
             </div>
 
-            <div id="runs" class="runs">Loading saved runs…</div>
+            <div id="runs" class="runs" aria-live="polite">
+                Loading saved runs…
+            </div>
         </section>
 
         <footer>
-            NS-CR · Gemini API · Local SQLite · Human review required
-            for consequential actions
+            NS-CR · Gemini API · SQLite · Configured HTTPS APIs ·
+            Human review required for consequential actions
         </footer>
     </main>
 
-    <script src="/static/app.js?v=20261029-5" defer></script>
-    <script src="/static/trace-template.js?v=20261029-2" defer></script>
+    <script src="/static/app.js?v=20261029-6" defer></script>
 </body>
 </html>

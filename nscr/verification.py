@@ -1,6 +1,18 @@
-from __future__ import annotations
 
-from collections import defaultdict
+"""Evidence verification for NS-CR Research Lab.
+
+This module validates plans, checks execution traces, evaluates constraints,
+assesses reported interventions, and evaluates repair retests.
+
+Important principles:
+- A plan does not establish that execution occurred.
+- Unknown observations remain unknown.
+- A failure alone does not prove a cause.
+- An intervention result is a causal hypothesis, not proof.
+- Missing evidence must not be treated as a successful test.
+"""
+
+from __future__ import annotations
 
 
 SUPPORTED_RULE_FIELDS = {
@@ -23,14 +35,21 @@ SUPPORTED_OPERATORS = {
 def dependency_cycles(steps: list[dict]) -> list[list[str]]:
     """Return dependency cycles using depth-first search."""
     graph: dict[str, list[str]] = {}
+
     for step in steps:
         step_id = step.get("id")
+
         if not isinstance(step_id, str) or not step_id:
             continue
 
         dependencies = step.get("depends_on", [])
+
         graph[step_id] = (
-            [dependency for dependency in dependencies if isinstance(dependency, str)]
+            [
+                dependency
+                for dependency in dependencies
+                if isinstance(dependency, str)
+            ]
             if isinstance(dependencies, list)
             else []
         )
@@ -40,14 +59,11 @@ def dependency_cycles(steps: list[dict]) -> list[list[str]]:
     cycles: list[list[str]] = []
     seen_cycles: set[tuple[str, ...]] = set()
 
-    def visit(node: str):
+    def visit(node: str) -> None:
         state[node] = 1
         stack.append(node)
 
         for dependency in graph.get(node, []):
-            if not isinstance(dependency, str):
-                continue
-
             if dependency not in graph:
                 continue
 
@@ -89,6 +105,11 @@ def validate_step_graph(steps: list[dict]) -> None:
         step_id = step["id"]
         dependencies = step.get("depends_on", [])
 
+        if not isinstance(dependencies, list):
+            raise ValueError(
+                f"Dependencies for step {step_id} must be a list."
+            )
+
         if len(dependencies) != len(set(dependencies)):
             raise ValueError(
                 f"Step {step_id} contains duplicate dependencies."
@@ -120,6 +141,13 @@ def validate_plan_structure(
     errors: list[str] = []
     warnings: list[str] = []
 
+    if not isinstance(plan, dict):
+        return {
+            "valid": False,
+            "errors": ["Plan must be an object."],
+            "warnings": [],
+        }
+
     steps = plan.get("steps", [])
 
     if not isinstance(steps, list):
@@ -134,20 +162,34 @@ def validate_plan_structure(
             f"Plan must contain between {min_steps} and {max_steps} steps."
         )
 
+    if any(not isinstance(step, dict) for step in steps):
+        errors.append("Every plan step must be an object.")
+        steps_for_validation = [
+            step for step in steps if isinstance(step, dict)
+        ]
+    else:
+        steps_for_validation = steps
+
     try:
-        validate_step_graph(steps)
-    except ValueError as exc:
+        validate_step_graph(steps_for_validation)
+    except (ValueError, TypeError) as exc:
         errors.append(str(exc))
 
     step_ids = {
         step.get("id")
-        for step in steps
-        if isinstance(step, dict) and step.get("id")
+        for step in steps_for_validation
+        if step.get("id")
     }
+
+    constraints = plan.get("constraints", [])
+
+    if not isinstance(constraints, list):
+        errors.append("Plan constraints must be a list.")
+        constraints = []
 
     constraint_ids: list[str] = []
 
-    for constraint in plan.get("constraints", []):
+    for constraint in constraints:
         if not isinstance(constraint, dict):
             errors.append("Every constraint must be an object.")
             continue
@@ -157,7 +199,15 @@ def validate_plan_structure(
         if constraint_id:
             constraint_ids.append(constraint_id)
 
-        for step_id in constraint.get("relevant_step_ids", []):
+        relevant_ids = constraint.get("relevant_step_ids", [])
+
+        if not isinstance(relevant_ids, list):
+            errors.append(
+                f"Constraint {constraint_id} has invalid relevant_step_ids."
+            )
+            relevant_ids = []
+
+        for step_id in relevant_ids:
             if step_id not in step_ids:
                 errors.append(
                     f"Constraint {constraint_id} references unknown "
@@ -166,7 +216,13 @@ def validate_plan_structure(
 
         rule = constraint.get("rule")
 
-        if rule:
+        if rule is not None:
+            if not isinstance(rule, dict):
+                errors.append(
+                    f"Constraint {constraint_id} has an invalid rule."
+                )
+                continue
+
             if rule.get("field") not in SUPPORTED_RULE_FIELDS:
                 errors.append(
                     f"Constraint {constraint_id} uses an unsupported field."
@@ -188,11 +244,12 @@ def validate_plan_structure(
         "errors": errors,
         "warnings": warnings,
         "step_count": len(steps),
-        "constraint_count": len(plan.get("constraints", [])),
+        "constraint_count": len(constraints),
     }
 
 
 def _truthy(value) -> bool:
+    """Return whether a recorded value is meaningfully present."""
     if value is None:
         return False
 
@@ -204,6 +261,12 @@ def _truthy(value) -> bool:
 
 def evaluate_rule(rule: dict, event_by_id: dict) -> dict:
     """Evaluate a supported rule against a named trace event."""
+    if not isinstance(rule, dict):
+        return {
+            "status": "not_evaluable",
+            "reason": "Rule is not an object.",
+        }
+
     event_id = rule.get("event_id")
 
     if not event_id:
@@ -218,6 +281,19 @@ def evaluate_rule(rule: dict, event_by_id: dict) -> dict:
         return {
             "status": "not_evaluable",
             "reason": f"Event {event_id} was not supplied.",
+        }
+
+    # Generated templates are placeholders, not actual observations.
+    if event.get("source") == "generated_template_pending_observation":
+        return {
+            "status": "not_evaluable",
+            "reason": "The referenced event is an unobserved template.",
+        }
+
+    if event.get("status", "unknown") == "unknown":
+        return {
+            "status": "not_evaluable",
+            "reason": "The referenced event has an unknown outcome.",
         }
 
     field = rule.get("field")
@@ -235,6 +311,13 @@ def evaluate_rule(rule: dict, event_by_id: dict) -> dict:
         return {
             "status": "not_evaluable",
             "reason": f"Unsupported operator: {operator}.",
+        }
+
+    # Do not turn missing values into false observations.
+    if actual is None and operator != "exists":
+        return {
+            "status": "not_evaluable",
+            "reason": f"The field {field} was not observed.",
         }
 
     if operator == "exists":
@@ -284,66 +367,108 @@ def evaluate_rule(rule: dict, event_by_id: dict) -> dict:
     }
 
 
+def _is_observed_event(event: dict) -> bool:
+    """Determine whether an event contains usable, non-template evidence."""
+    if not isinstance(event, dict):
+        return False
+
+    if event.get("source") == "generated_template_pending_observation":
+        return False
+
+    if event.get("status", "unknown") == "unknown":
+        return False
+
+    return True
+
+
 def verify_run(
     plan: dict,
     events: list[dict],
     causal_conclusion: str = "undetermined",
 ) -> dict:
     """Check trace consistency and evidence completeness."""
+    events = events if isinstance(events, list) else []
+
     plan_validation = validate_plan_structure(plan)
-    steps = plan.get("steps", [])
-    known_steps = {
-        step.get("id")
+
+    steps = plan.get("steps", []) if isinstance(plan, dict) else []
+
+    known_steps: set[str] = {
+        step_id
         for step in steps
-        if step.get("id")
+        if isinstance(step, dict)
+        and isinstance(step_id := step.get("id"), str)
+        and step_id
     }
 
-    event_ids = [event.get("event_id") for event in events]
+    event_ids = [
+        event.get("event_id")
+        for event in events
+        if isinstance(event, dict)
+    ]
+
     duplicate_event_ids = sorted({
-        event_id for event_id in event_ids
+        event_id
+        for event_id in event_ids
         if event_id and event_ids.count(event_id) > 1
     })
 
     unknown_step_ids = sorted({
         step_id
         for event in events
-        if isinstance(step_id := event.get("step_id"), str)
+        if isinstance(event, dict)
+        and isinstance(step_id := event.get("step_id"), str)
         and step_id not in known_steps
     })
 
     unknown_status_events = [
         event.get("event_id")
         for event in events
-        if event.get("status", "unknown") == "unknown"
+        if isinstance(event, dict)
+        and event.get("status", "unknown") == "unknown"
     ]
 
     failed_events = [
         event.get("event_id")
         for event in events
-        if event.get("status") == "failed"
+        if isinstance(event, dict)
+        and event.get("status") == "failed"
     ]
 
     failed_preconditions = [
         event.get("event_id")
         for event in events
-        if event.get("preconditions_met") is False
+        if isinstance(event, dict)
+        and event.get("preconditions_met") is False
     ]
 
     failed_postconditions = [
         event.get("event_id")
         for event in events
-        if event.get("postconditions_met") is False
+        if isinstance(event, dict)
+        and event.get("postconditions_met") is False
     ]
 
     event_by_id = {
         event.get("event_id"): event
         for event in events
-        if event.get("event_id")
+        if isinstance(event, dict) and event.get("event_id")
     }
 
     constraint_results = []
 
-    for constraint in plan.get("constraints", []):
+    constraints = plan.get("constraints", []) if isinstance(plan, dict) else []
+
+    for constraint in constraints:
+        if not isinstance(constraint, dict):
+            constraint_results.append({
+                "constraint_id": None,
+                "statement": None,
+                "status": "not_evaluable",
+                "reason": "Constraint is not an object.",
+            })
+            continue
+
         rule = constraint.get("rule")
 
         if not rule:
@@ -363,13 +488,13 @@ def verify_run(
             **result,
         })
 
-    observed_step_ids = {
-        event.get("step_id")
+    observed_step_ids: set[str] = {
+        step_id
         for event in events
-        if event.get("step_id")
-        and event.get("status") != "unknown"
-        and event.get("source")
-        != "generated_template_pending_observation"
+        if isinstance(event, dict)
+        and isinstance(step_id := event.get("step_id"), str)
+        and step_id
+        and _is_observed_event(event)
     }
 
     missing_step_ids = sorted(known_steps - observed_step_ids)
@@ -403,19 +528,25 @@ def verify_run(
             "At least one event or precondition/postcondition check failed."
         )
 
-    # Do not infer causal proof from temporal order or failure alone.
-    conclusion = causal_conclusion or "undetermined"
-
-    if conclusion not in {
+    # A failure does not establish causality.
+    allowed_conclusions = {
         "undetermined",
         "intervention_supported",
         "not_supported",
-    }:
-        conclusion = "undetermined"
+    }
+
+    conclusion = (
+        causal_conclusion
+        if causal_conclusion in allowed_conclusions
+        else "undetermined"
+    )
 
     return {
         "plan_validation": plan_validation,
         "trace_event_count": len(events),
+        "observed_event_count": sum(
+            1 for event in events if _is_observed_event(event)
+        ),
         "duplicate_event_ids": duplicate_event_ids,
         "unknown_step_ids": unknown_step_ids,
         "unknown_status_events": unknown_status_events,
@@ -431,65 +562,91 @@ def verify_run(
 
 def intervention_assessment(
     payload: dict,
-    known_step_ids: set[str],
+    known_step_ids: set[str] | None = None,
 ) -> dict:
-    """Assess reported intervention results conservatively."""
+    """Assess reported intervention results conservatively.
+
+    known_step_ids is optional to remain compatible with callers that
+    only pass the request payload. When provided, it validates the
+    candidate step against the saved plan.
+    """
+    payload = payload if isinstance(payload, dict) else {}
+
     candidate = payload.get("candidate_step_id")
     executed = payload.get("intervention_was_executed", False)
     controls = payload.get("conditions_held_constant") or []
-    source = payload.get("evidence_source", "").strip()
+    source = payload.get("evidence_source") or ""
     baseline = payload.get("baseline_outcome")
     intervention = payload.get("intervention_outcome")
 
     reasons = []
 
-    if candidate not in known_step_ids:
-        reasons.append("Candidate step is not in the plan.")
+    if not candidate:
+        reasons.append("No candidate step was supplied.")
+    elif known_step_ids is not None and candidate not in known_step_ids:
+        reasons.append("Candidate step is not in the saved plan.")
 
-    if not executed:
-        reasons.append("The intervention was not reported as executed.")
+    if executed is not True:
+        reasons.append("The intervention was not confirmed as executed.")
 
     if not controls:
         reasons.append("No controlled conditions were recorded.")
 
-    if not source:
+    if not isinstance(source, str) or not source.strip():
         reasons.append("No evidence source was supplied.")
 
-    if baseline is None or intervention is None:
-        reasons.append("Baseline or intervention outcome is missing.")
+    if not isinstance(baseline, str) or not baseline.strip():
+        reasons.append("A recorded baseline outcome is missing.")
+
+    if not isinstance(intervention, str) or not intervention.strip():
+        reasons.append("A recorded intervention outcome is missing.")
 
     if reasons:
         return {
             "status": "undetermined",
             "reasons": reasons,
+            "candidate_step_id": candidate,
             "human_review_required": True,
+            "causal_claim_permitted": False,
         }
 
-    if baseline != intervention:
+    # Different reported strings are not automatically proof of a
+    # meaningful change. This only records that the observations differ.
+    if (
+        isinstance(baseline, str)
+        and isinstance(intervention, str)
+        and baseline.strip() != intervention.strip()
+    ):
         status = "intervention_supported"
         explanation = (
-            "The reported outcome changed under the intervention. "
+            "The reported baseline and intervention outcomes differ. "
             "This supports a causal hypothesis but does not prove causality."
         )
     else:
         status = "not_supported"
         explanation = (
-            "The reported outcome did not change. "
-            "This does not rule out causality under other conditions."
+            "The reported baseline and intervention outcomes are identical. "
+            "The observations do not support a change under the reported "
+            "conditions, but this does not rule out causality."
         )
 
     return {
         "status": status,
         "explanation": explanation,
         "candidate_step_id": candidate,
+        "baseline_outcome": baseline,
+        "intervention_outcome": intervention,
         "conditions_held_constant": controls,
         "evidence_source": source,
         "human_review_required": True,
+        "causal_claim_permitted": False,
     }
 
 
 def assess_retest(plan: dict, events: list[dict]) -> dict:
     """Assess revised-plan retest evidence without claiming proof."""
+    events = events if isinstance(events, list) else []
+
     structure = validate_plan_structure(
         plan,
         min_steps=1,
@@ -497,31 +654,37 @@ def assess_retest(plan: dict, events: list[dict]) -> dict:
     )
 
     verification = verify_run(plan, events)
-    steps = plan.get("steps", [])
-    known_steps = {
-        step.get("id")
+
+    steps = plan.get("steps", []) if isinstance(plan, dict) else []
+
+    known_steps: set[str] = {
+        step["id"]
         for step in steps
-        if step.get("id")
+        if isinstance(step, dict)
+        and isinstance(step.get("id"), str)
+        and step.get("id")
     }
 
-    observed_step_ids = {
-        event.get("step_id")
+    observed_step_ids: set[str] = {
+        event["step_id"]
         for event in events
-        if event.get("step_id")
-        and event.get("status") != "unknown"
-        and event.get("source")
-        != "generated_template_pending_observation"
+        if isinstance(event, dict)
+        and isinstance(event.get("step_id"), str)
+        and event.get("step_id")
+        and _is_observed_event(event)
     }
 
     unobserved_steps = sorted(known_steps - observed_step_ids)
 
     constraint_failures = [
-        item for item in verification["constraint_results"]
+        item
+        for item in verification["constraint_results"]
         if item.get("status") == "failed"
     ]
 
     unevaluable_constraints = [
-        item for item in verification["constraint_results"]
+        item
+        for item in verification["constraint_results"]
         if item.get("status") == "not_evaluable"
     ]
 
@@ -559,6 +722,7 @@ def assess_retest(plan: dict, events: list[dict]) -> dict:
         "limitations": [
             "Evidence is user-supplied and has not been independently authenticated.",
             "A successful retest supports recovery but does not prove the repair caused it.",
-            "Semantic constraints require appropriate human or domain-expert review.",
+            "Semantic constraints require human or domain-expert review.",
+            "Unobserved steps cannot be assumed to have succeeded.",
         ],
     }
