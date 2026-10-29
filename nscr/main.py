@@ -998,3 +998,12 @@ def runs():
 @app.get("/api/runs/{run_id}")
 def run_detail(run_id: str):
     return _ensure_run(run_id)
+
+
+@app.get("/api/workflows/{workflow_id}/runs")
+def workflow_history(workflow_id: str):
+    """Return persisted workflow runs for the history and comparison screens."""
+    history = get_workflow_runs(workflow_id)
+    if not history:
+        raise HTTPException(status_code=404, detail="Workflow not found.")
+    return {"workflow_id": workflow_id, "runs": history}

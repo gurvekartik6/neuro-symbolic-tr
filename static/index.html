@@ -10,7 +10,7 @@
         content="NS-CR research prototype for evidence-backed planning, API execution, diagnosis, repair, and causal analysis."
     >
     <title>NS-CR Research Lab</title>
-    <link rel="stylesheet" href="/static/style.css?v=20261029-6">
+    <link rel="stylesheet" href="/static/style.css?v=20261029-11">
 </head>
 
 <body>
@@ -65,7 +65,7 @@
         </section>
 
         <!-- STEPS 02–07 -->
-        <section id="planPanel" class="panel hidden">
+        <section id="planPanel" class="panel">
 
             <!-- STEP 02: PLAN -->
             <div class="step-title">
@@ -104,7 +104,6 @@
                 The app does not invent successful events.
             </p>
 
-            <!-- app.js creates the API binding interface here. -->
             <div id="executionPanel">
                 <p id="executionToolStatus" role="status">
                     Loading configured API tools…
@@ -138,8 +137,7 @@
                 a real-world effect occurred.
             </p>
 
-            <!-- Legacy IDs retained for compatibility with existing scripts.
-                 The updated app.js hides these manual trace controls. -->
+            <!-- Legacy IDs retained for compatibility with existing scripts. -->
             <div id="legacyTraceEditor" class="hidden">
                 <div class="trace-template-actions">
                     <button
@@ -397,18 +395,91 @@
             <div id="retestView"></div>
         </section>
 
-        <!-- STEP 08: HISTORY -->
-        <section class="panel">
+        <!-- STEP 08: WORKFLOW HISTORY AND EVIDENCE AUDIT -->
+        <section id="historyPanel" class="panel">
             <div class="step-title">
                 <span>08</span>
                 <div>
-                    <h2>Workflow history</h2>
+                    <h2>Workflow history and evidence audit</h2>
+                    <p>
+                        Review saved runs in the selected workflow, their
+                        lineage, and which evidence was actually recorded.
+                    </p>
+                </div>
+
+                <button
+                    id="workflowHistoryBtn"
+                    class="secondary"
+                    type="button"
+                >
+                    Load workflow history
+                </button>
+            </div>
+
+            <p class="trace-help">
+                History shows saved application records only. A saved plan
+                or proposed repair is not proof that an action was executed.
+            </p>
+
+            <div id="workflowHistoryView"></div>
+        </section>
+
+        <!-- STEP 09: POLICY COMPARISON AND EXPORT -->
+        <section id="comparisonPanel" class="panel">
+            <div class="step-title">
+                <span>09</span>
+                <div>
+                    <h2>Recovery-policy comparison and results export</h2>
+                    <p>
+                        Compare evidence availability across recovery
+                        approaches and export recorded workflow data for
+                        research analysis.
+                    </p>
+                </div>
+            </div>
+
+            <p class="trace-help">
+                Policies that were not actually run are marked
+                “Not evaluated”. This screen does not simulate results
+                or claim one policy is superior. Use repeated, controlled
+                trials before making performance claims.
+            </p>
+
+            <button
+                id="comparePoliciesBtn"
+                class="secondary"
+                type="button"
+            >
+                Build evidence comparison
+            </button>
+
+            <button
+                id="exportWorkflowCsvBtn"
+                class="secondary"
+                type="button"
+            >
+                Export workflow CSV
+            </button>
+
+            <div id="policyComparisonView"></div>
+        </section>
+
+        <!-- SAVED RUNS -->
+        <section class="panel">
+            <div class="step-title">
+                <span>↻</span>
+                <div>
+                    <h2>Saved runs</h2>
                     <p>
                         Open saved runs and review their recorded evidence.
                     </p>
                 </div>
 
-                <button id="refreshBtn" class="secondary" type="button">
+                <button
+                    id="refreshBtn"
+                    class="secondary"
+                    type="button"
+                >
                     Refresh
                 </button>
             </div>
@@ -424,6 +495,6 @@
         </footer>
     </main>
 
-    <script src="/static/app.js?v=20261029-6" defer></script>
+    <script src="/static/app.js?v=20261029-11" defer></script>
 </body>
 </html>
